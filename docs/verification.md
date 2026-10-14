@@ -21,6 +21,8 @@ Importing a second engineering file matched the earlier pack by stable source ID
 
 A separate SDK client changed the live catalog; the screen updated from the daemon configuration event without manual refresh. Switching to an empty custom library folder showed zero saved packs while keeping current profiles; switching back reopened the two saved packs. Disabling, removing, and reinstalling the plugin in the disposable daemon preserved both YAML files byte-for-byte and reopened them. The unrelated `appendSystemPrompt` setting remained intact after live profile operations.
 
+Installation from the public Git URL at commit `ce5640e` also completed, started the plugin, and reopened the saved packs. This exercises the manifest's checkout preparation command with a clean install.
+
 Wide (1203px) and compact (390px) screens were inspected in light and dark themes, including the import sheet and reviewed changes. The final client bundle loaded without plugin errors; the browser console contained only Paseo web/animation capability notices. The final restore button reads **Restore**.
 
 ## Limits of the evidence
