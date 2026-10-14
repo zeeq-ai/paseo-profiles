@@ -1,0 +1,45 @@
+{
+  "name": "@zeeq-ai/paseo-profiles",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A portable library of Paseo agent profile packs with YAML import, export, updates, and switching.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zeeq-ai/paseo-profiles.git"
+  },
+  "files": [
+    "paseo-plugin.json",
+    "OVERVIEW.md",
+    "index.client.tsx",
+    "index.server.ts",
+    "client/",
+    "server/",
+    "shared/"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit && tsc --project tests/tsconfig.json --noEmit",
+    "lint": "biome check",
+    "format": "biome check --write",
+    "test": "vitest run --config tests/vitest.config.ts",
+    "test:e2e": "vitest run --config tests/vitest.e2e.config.ts",
+    "check": "npm run typecheck && npm run lint && npm test"
+  },
+  "dependencies": {
+    "yaml": "^2.8.4"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.0",
+    "@getpaseo/client": "0.11.2",
+    "@getpaseo/plugin": "0.11.2",
+    "@playwright/test": "^1.56.0",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/node": "^24.0.0",
+    "@types/react": "~19.2.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.6",
+    "zod": "^4.4.3"
+  }
+}

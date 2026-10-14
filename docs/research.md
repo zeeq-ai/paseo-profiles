@@ -1,4 +1,4 @@
-# Paseo profile sets research
+# Paseo profile packs research
 
 Research date: 14 October 2026. Local source: `/Users/cchen/code/oss/paseo`, commit `e1a5664d9b615dcfcf88f4b3a0ba05234b219dce`; plugin/client/protocol package version 0.11.2. The supplied project directory was empty and had no Git repository.
 

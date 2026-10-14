@@ -1,0 +1,15 @@
+format: paseo-profile-set
+version: 1
+id: example-engineering-team
+name: Engineering team
+profiles:
+  - id: engineering-review
+    name: Engineering review
+    provider: codex
+    notes: |
+      Review correctness, edge cases, and missing verification.
+  - id: engineering-planning
+    name: Engineering planning
+    provider: codex
+    notes: |
+      Investigate architecture and propose an implementation plan.

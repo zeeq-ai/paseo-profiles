@@ -1,0 +1,9 @@
+{
+  "id": "paseo-profiles",
+  "name": "Agent profile packs",
+  "description": "Save, share, update, and switch portable packs of Paseo agent profiles.",
+  "requirements": {
+    "paseo": ">=0.11.2"
+  },
+  "build": [["npm", "ci", "--omit=dev", "--ignore-scripts"]]
+}

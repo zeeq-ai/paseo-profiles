@@ -1,0 +1,15 @@
+format: paseo-profile-set
+version: 1
+id: example-engineering-team
+name: Engineering team
+profiles:
+  - id: engineering-review
+    name: Engineering review
+    provider: codex
+    notes: |
+      Review correctness, edge cases, concurrency, and missing verification.
+  - id: engineering-ui
+    name: Engineering UI
+    provider: codex
+    notes: |
+      Build interfaces using the project's design system and native components.
