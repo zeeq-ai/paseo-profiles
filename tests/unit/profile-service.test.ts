@@ -1,10 +1,10 @@
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Fault } from "../../server/files";
 import { type PaseoAdapter, ProfileService } from "../../server/profile-service";
-import { serializeSet } from "../../server/yaml";
+import { parseSet, serializeSet } from "../../server/yaml";
 import type { Profile, ProfileSet } from "../../shared/set";
 import { profile, profileSet } from "../fixtures/profile-sets";
 
@@ -40,11 +40,14 @@ function createPaseo(initialProfiles: Profile[] = []) {
   return { adapter, state };
 }
 
-async function createService(options: { profiles?: Profile[]; fault?: Fault } = {}) {
+async function createService(
+  options: { profiles?: Profile[]; fault?: Fault; providers?: PaseoAdapter["providers"] } = {},
+) {
   const home = await mkdtemp(path.join(tmpdir(), "paseo-profiles-service-"));
   homes.push(home);
   await writeFile(path.join(home, "server-id"), "paseo-profiles-unit-test\n", { flag: "wx" });
   const paseo = createPaseo(options.profiles);
+  paseo.adapter.providers = options.providers;
   const service = new ProfileService({ home, paseo: paseo.adapter, fault: options.fault });
   return { home, paseo, service };
 }
@@ -64,6 +67,221 @@ function previewInput(set: ProfileSet) {
 }
 
 describe("profile service import and activation", () => {
+  it("captures and exports appearance and shared prompt, and detects stale prompt edits", async () => {
+    const selected = profile({ id: "selected", name: "Selected", icon: "bug", color: "violet" });
+    const { service, paseo } = await createService({
+      profiles: [selected, profile({ id: "other", name: "Other" })],
+    });
+    paseo.state.config.appendSystemPrompt = "Shared instructions\nKeep exact spacing.\n";
+    const current = await service.currentProfiles();
+    const capture = {
+      libraryRoot: "",
+      name: "Portable team",
+      profileIds: [selected.id],
+      expectedCurrentRevision: current.revision,
+    };
+    const saved = await service.captureCurrent(capture);
+    expect(saved.set.profiles).toEqual([selected]);
+    expect(saved.set.appendSystemPrompt).toBe(current.appendSystemPrompt);
+    expect(paseo.state.patches).toEqual([]);
+    const exported = await service.exportProfiles({ source: "current", ...capture });
+    expect(parseSet(first(exported.files).text).set).toMatchObject({
+      profiles: [selected],
+      appendSystemPrompt: current.appendSystemPrompt,
+    });
+    const libraryExport = await service.exportProfiles({
+      libraryRoot: "",
+      source: "library",
+      localIds: [saved.localId],
+    });
+    expect(parseSet(first(libraryExport.files).text).set).toEqual(saved.set);
+
+    paseo.state.config.appendSystemPrompt = "Changed after selection";
+    await expect(service.captureCurrent(capture)).rejects.toThrow(/Current profiles changed/);
+    await expect(service.exportProfiles({ source: "current", ...capture })).rejects.toThrow(
+      /Current profiles changed/,
+    );
+  });
+
+  it.each([
+    { mode: "use" as const, prompt: "Incoming shared prompt" },
+    { mode: "add" as const, prompt: "" },
+  ])("reviews, applies, and recovers shared prompt in $mode mode", async ({ mode, prompt }) => {
+    const existing = profile({ id: "existing", name: "Existing" });
+    const incoming = profile({ id: "incoming", name: "Incoming" });
+    const { service, paseo } = await createService({ profiles: [existing] });
+    const saved = await service.saveSet({
+      libraryRoot: "",
+      set: profileSet({ profiles: [incoming], appendSystemPrompt: prompt }),
+    });
+    const review = await service.applyPreview({
+      libraryRoot: "",
+      localId: saved.localId,
+      mode,
+      applySystemPrompt: true,
+      selections: [{ profileId: incoming.id, action: "add" }],
+    });
+    expect(review.systemPrompt).toEqual({ before: "keep this daemon setting", target: prompt });
+    expect(paseo.state.patches).toEqual([]);
+    await service.applyCommit({ libraryRoot: "", previewId: review.previewId });
+    expect(paseo.state.config.appendSystemPrompt).toBe(prompt);
+    expect(paseo.state.config.agentProfiles).toEqual(
+      mode === "add" ? [existing, incoming] : [incoming],
+    );
+    expect(paseo.state.config.pluginsEnabled).toBe(true);
+    const recovery = await service.recoveryList({ libraryRoot: "" });
+    const restore = await service.applyPreview({
+      libraryRoot: "",
+      snapshotId: first(recovery.snapshots).id,
+      mode: "restore",
+    });
+    expect(restore.target).toEqual([existing]);
+    expect(restore.systemPrompt).toEqual({ before: prompt, target: "keep this daemon setting" });
+    await service.applyCommit({ libraryRoot: "", previewId: restore.previewId });
+    expect(paseo.state.config.appendSystemPrompt).toBe("keep this daemon setting");
+  });
+
+  it("preserves the host prompt by default when adding profiles from a pack with a prompt", async () => {
+    const { service, paseo } = await createService();
+    const entry = await service.saveSet({
+      libraryRoot: "",
+      set: profileSet({ appendSystemPrompt: "Incoming prompt" }),
+    });
+    const review = await service.applyPreview({
+      libraryRoot: "",
+      localId: entry.localId,
+      mode: "add",
+      selections: entry.set.profiles.map((item) => ({ profileId: item.id, action: "add" })),
+    });
+    expect(review.systemPrompt).toBeUndefined();
+    await service.applyCommit({ libraryRoot: "", previewId: review.previewId });
+    expect(paseo.state.config.appendSystemPrompt).toBe("keep this daemon setting");
+    expect(paseo.state.patches[0]).not.toHaveProperty("appendSystemPrompt");
+  });
+
+  it("rejects a shared prompt apply after another client edits only the prompt", async () => {
+    const { service, paseo } = await createService();
+    const entry = await service.saveSet({
+      libraryRoot: "",
+      set: profileSet({ appendSystemPrompt: "Incoming" }),
+    });
+    const review = await service.applyPreview({
+      libraryRoot: "",
+      localId: entry.localId,
+      mode: "use",
+    });
+    paseo.state.config.appendSystemPrompt = "Someone else's latest edit";
+    await expect(
+      service.applyCommit({ libraryRoot: "", previewId: review.previewId }),
+    ).rejects.toThrow(/Shared system prompt changed/);
+    expect(paseo.state.patches).toEqual([]);
+  });
+
+  it("includes prompt state when reconciling an uncertain prompt-only apply", async () => {
+    const existing = profile({ id: "same", name: "Same" });
+    const { service, paseo } = await createService({
+      profiles: [existing],
+      fault: (stage) => {
+        if (stage === "afterConfigPatch") throw new Error("lost response");
+      },
+    });
+    const entry = await service.saveSet({
+      libraryRoot: "",
+      set: profileSet({ profiles: [existing], appendSystemPrompt: "Incoming" }),
+    });
+    const review = await service.applyPreview({
+      libraryRoot: "",
+      localId: entry.localId,
+      mode: "use",
+    });
+    await expect(
+      service.applyCommit({ libraryRoot: "", previewId: review.previewId }),
+    ).rejects.toThrow(/inspect recovery/);
+    const store = await service.store();
+    const snapshot = JSON.parse(
+      await readFile(
+        path.join(
+          store.state,
+          "snapshots",
+          first(await readdir(path.join(store.state, "snapshots"))),
+        ),
+        "utf8",
+      ),
+    );
+    expect(snapshot.appendSystemPrompt).toBe("keep this daemon setting");
+    paseo.state.config.appendSystemPrompt = "A third prompt";
+    expect((await service.recoveryList({ libraryRoot: "" })).operations).toMatchObject([
+      { status: "ambiguous" },
+    ]);
+  });
+
+  it("keeps incoming settings portable while resolving only selected profiles on apply", async () => {
+    const existing = profile({
+      id: "existing",
+      name: "Existing",
+      provider: "offline",
+      model: "keep-old",
+    });
+    const { service, paseo } = await createService({
+      profiles: [existing],
+      providers: {
+        snapshot: async () => ({
+          requestId: "unit-provider-snapshot",
+          generatedAt: new Date().toISOString(),
+          entries: [
+            {
+              provider: "local",
+              enabled: true,
+              status: "ready",
+              models: [{ provider: "local", id: "local-default", label: "Local", isDefault: true }],
+            },
+          ],
+        }),
+      },
+    });
+    const source = profileSet({
+      profiles: [
+        profile({
+          id: "automatic",
+          name: "Automatic",
+          provider: "",
+          icon: "future-icon",
+          color: "future-color",
+        }),
+        profile({ id: "skipped", name: "Skipped", provider: "missing" }),
+      ],
+    });
+    const imported = await service.importPreview(previewInput(source));
+    const saved = first(
+      (
+        await service.importCommit({
+          libraryRoot: "",
+          previewId: imported.previewId,
+          replaceLocalChanges: false,
+        })
+      ).entries,
+    );
+    const review = await service.applyPreview({
+      libraryRoot: "",
+      localId: saved.localId,
+      mode: "add",
+      selections: [
+        { profileId: "automatic", action: "add" },
+        { profileId: "skipped", action: "skip" },
+      ],
+    });
+    expect(review.target).toEqual([
+      existing,
+      { ...source.profiles[0], provider: "local", model: "local-default" },
+    ]);
+    expect(review.warnings.join("\n")).not.toContain("Skipped");
+    await service.applyCommit({ libraryRoot: "", previewId: review.previewId });
+    expect(paseo.state.config.agentProfiles).toEqual(review.target);
+    expect((await service.readSet({ libraryRoot: "", localId: saved.localId })).set).toEqual(
+      source,
+    );
+  });
+
   it("advances Jamie's baseline without a head write, then requires consent to replace local edits", async () => {
     const faultStages: string[] = [];
     const { service } = await createService({

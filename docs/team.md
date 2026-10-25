@@ -21,3 +21,5 @@ The lead publishes the agreed shared contracts before parallel work. The Princip
 At each phase, report changed files, actual checks, unresolved behavior, and the next dependency. Flag a missing SDK capability or contract change immediately. Use Paseo completion notifications and background follow-ups rather than polling. Advisory agents review concrete flows and stable candidates. Do not create additional agents without a task-specific need.
 
 The scaffold and shared contracts were established before parallel implementation. Storage, native UI, and behavioral verification were coordinated through the lead, who integrated the final client fixes and ran the isolated daemon/browser checks. The main Paseo test suite and daemon on port 6767 were left alone.
+
+On 2026-10-25 the lead reused Staff Engineer II and End-User Customer Advocate for the requested layout and UX verification of appearance editing, destination fallbacks, shared prompts, and Select all. Both reviewed a disposable Paseo 0.13.0 host; implementation and automated backend tests remained with the lead. Review findings and verification are recorded in [verification.md](verification.md).

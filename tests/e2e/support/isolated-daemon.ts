@@ -9,7 +9,7 @@ import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 
 const PLUGIN_ID = "paseo-profiles";
 const PROJECT_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
-const EXPECTED_CLI_VERSION = "0.11.2";
+const EXPECTED_CLI_VERSION = process.env.PASEO_PROFILES_CLI_VERSION ?? "0.11.2";
 
 interface CommandResult {
   code: number | null;

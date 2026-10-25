@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { serializeSet } from "../../server/yaml";
+import { parseSet, serializeSet } from "../../server/yaml";
 import {
   applyCommit,
   applyPreview,
+  captureCurrent,
   currentProfiles,
   duplicateSet,
+  exportProfiles,
   historyList,
   importCommit,
   importPreview,
@@ -116,6 +118,108 @@ describe("Paseo plugin RPC on an isolated real daemon", () => {
     expect(after.config.appendSystemPrompt).toBe("Keep this unrelated daemon setting");
     expect((await callPluginRpc(daemon, recoveryList, { libraryRoot: "" })).snapshots).toHaveLength(
       recoveryBefore.snapshots.length + 1,
+    );
+  });
+
+  it("transfers shared prompts and appearance and restores them through recovery", async () => {
+    if (!daemon) throw new Error("The isolated daemon did not start");
+    const original = profile({
+      id: "rpc-appearance",
+      name: "Appearance",
+      icon: "bug",
+      color: "violet",
+    });
+    await daemon.client.patchDaemonConfig({
+      agentProfiles: [original],
+      appendSystemPrompt: "Original shared prompt\n",
+    });
+    const current = await callPluginRpc(daemon, currentProfiles, {});
+    const captured = await callPluginRpc(daemon, captureCurrent, {
+      libraryRoot: "",
+      name: "RPC capture",
+      profileIds: [original.id],
+      expectedCurrentRevision: current.revision,
+    });
+    expect(captured.set).toMatchObject({
+      profiles: [original],
+      appendSystemPrompt: "Original shared prompt\n",
+    });
+    const exported = await callPluginRpc(daemon, exportProfiles, {
+      libraryRoot: "",
+      source: "current",
+      profileIds: [original.id],
+      expectedCurrentRevision: current.revision,
+    });
+    expect(parseSet(exported.files[0]?.text ?? "").set).toMatchObject({
+      profiles: [original],
+      appendSystemPrompt: "Original shared prompt\n",
+    });
+    const pack = profileSet({
+      id: "rpc-shared-prompt",
+      profiles: [
+        profile({
+          id: "rpc-future",
+          name: "Future",
+          icon: "future-icon",
+          color: "future-color",
+          provider: "",
+        }),
+      ],
+      appendSystemPrompt: "Incoming shared prompt",
+    });
+    const incoming = await callPluginRpc(daemon, importPreview, {
+      libraryRoot: "",
+      files: [{ name: "future.yaml", text: serializeSet(pack) }],
+      asCopy: false,
+    });
+    const imported = await callPluginRpc(daemon, importCommit, {
+      libraryRoot: "",
+      previewId: incoming.previewId,
+      replaceLocalChanges: false,
+    });
+    const entry = imported.entries[0];
+    if (!entry) throw new Error("Missing imported pack");
+    expect((await daemon.client.getDaemonConfig()).config.appendSystemPrompt).toBe(
+      current.appendSystemPrompt,
+    );
+    const add = await callPluginRpc(daemon, applyPreview, {
+      libraryRoot: "",
+      localId: entry.localId,
+      mode: "add",
+      selections: [{ profileId: "rpc-future", action: "add" }],
+    });
+    expect(add.systemPrompt).toBeUndefined();
+    await callPluginRpc(daemon, applyCommit, { libraryRoot: "", previewId: add.previewId });
+    expect((await daemon.client.getDaemonConfig()).config.appendSystemPrompt).toBe(
+      current.appendSystemPrompt,
+    );
+    expect(
+      (await callPluginRpc(daemon, readSet, { libraryRoot: "", localId: entry.localId })).set,
+    ).toEqual(pack);
+    const use = await callPluginRpc(daemon, applyPreview, {
+      libraryRoot: "",
+      localId: entry.localId,
+      mode: "use",
+    });
+    expect(use.systemPrompt).toEqual({
+      before: current.appendSystemPrompt,
+      target: pack.appendSystemPrompt,
+    });
+    const applied = await callPluginRpc(daemon, applyCommit, {
+      libraryRoot: "",
+      previewId: use.previewId,
+    });
+    expect((await daemon.client.getDaemonConfig()).config.appendSystemPrompt).toBe(
+      pack.appendSystemPrompt,
+    );
+    const restore = await callPluginRpc(daemon, applyPreview, {
+      libraryRoot: "",
+      snapshotId: applied.operationId,
+      mode: "restore",
+    });
+    await callPluginRpc(daemon, applyCommit, { libraryRoot: "", previewId: restore.previewId });
+    expect((await daemon.client.getDaemonConfig()).config.appendSystemPrompt).toBe(
+      current.appendSystemPrompt,
     );
   });
 

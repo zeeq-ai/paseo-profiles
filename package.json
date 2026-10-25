@@ -13,6 +13,7 @@
     "OVERVIEW.md",
     "index.client.tsx",
     "index.server.ts",
+    "assets/",
     "client/",
     "server/",
     "shared/"

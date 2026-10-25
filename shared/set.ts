@@ -6,7 +6,8 @@ export const ProfileSchema = z
   .object({
     id: z.string().min(1),
     name: z.string(),
-    provider: z.string().min(1),
+    // An empty provider asks the destination to choose from its configured providers.
+    provider: z.string().default(""),
     icon: z.string().optional(),
     color: z.string().optional(),
     model: z.string().optional(),
@@ -35,6 +36,7 @@ export const SetSchema = z
     name: z.string().trim().min(1),
     origin: z.object({ fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).optional(),
     copiedFrom: z.string().optional(),
+    appendSystemPrompt: z.string().optional(),
     profiles: ProfilesSchema.refine((p) => p.length > 0, "A saved pack needs at least one profile"),
   })
   .strict();

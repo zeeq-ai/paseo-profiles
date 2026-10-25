@@ -1,5 +1,6 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { createGist, gistAvailability, readGist } from "./server/gists";
 import { readHostFile, writeHostFile } from "./server/host-files";
 import { ProfileService } from "./server/profile-service";
 import { preferences } from "./shared/preferences";
@@ -30,6 +31,9 @@ export default function contribute(server: PluginServerContext) {
   );
   server.handle(rpc.captureCurrent, (input, { paseo }) => getService(paseo).captureCurrent(input));
   server.handle(rpc.exportProfiles, (input, { paseo }) => getService(paseo).exportProfiles(input));
+  server.handle(rpc.gistAvailability, gistAvailability);
+  server.handle(rpc.createGist, createGist);
+  server.handle(rpc.readGist, readGist);
   server.handle(rpc.importPreview, (input, { paseo }) => getService(paseo).importPreview(input));
   server.handle(rpc.importCommit, (input, { paseo }) => getService(paseo).importCommit(input));
   server.handle(rpc.applyPreview, (input, { paseo }) => getService(paseo).applyPreview(input));

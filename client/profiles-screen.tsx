@@ -16,14 +16,17 @@ import {
   applyCommit,
   applyPreview,
   captureCurrent,
+  createGist,
   currentProfiles,
   deleteSet,
   duplicateSet,
   exportProfiles,
+  gistAvailability as gistAvailabilityContract,
   historyList,
   importCommit,
   importPreview,
   listLibrary,
+  readGist,
   readHostFile,
   recoveryList,
   restoreHistory,
@@ -42,7 +45,10 @@ import type {
   RecoveryState,
   SelectionChoice,
 } from "./models";
+import { ProfileAppearance, ProfileAppearanceFields } from "./profile-appearance";
 import { ApplyReview, ExportReview, ImportReview } from "./review-dialogs";
+import { SelectAllAction } from "./select-all-action";
+import { SharedPromptReview } from "./shared-prompt-review";
 import { useWriteRpc } from "./use-write-rpc";
 import { chooseBrowserFiles, startBrowserDownloads, type TransferFile } from "./web";
 
@@ -83,6 +89,9 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
   const currentProfilesRpc = useRpc(currentProfiles);
   const captureCurrentRpc = useWriteRpc(captureCurrent);
   const exportProfilesRpc = useRpc(exportProfiles);
+  const gistAvailabilityRpc = useRpc(gistAvailabilityContract);
+  const createGistRpc = useWriteRpc(createGist);
+  const readGistRpc = useRpc(readGist);
   const importPreviewRpc = useRpc(importPreview);
   const importCommitRpc = useWriteRpc(importCommit);
   const applyPreviewRpc = useRpc(applyPreview);
@@ -150,8 +159,15 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
   const [recoveryLoading, setRecoveryLoading] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [screenError, setScreenError] = useState<string | null>(null);
+  const [gistStatus, setGistStatus] = useState<{
+    hostId: string;
+    checking: boolean;
+    available: boolean;
+    message: string | null;
+  }>({ hostId: "", checking: false, available: false, message: null });
   const currentRequest = useRef(0);
   const libraryRequest = useRef(0);
+  const gistStatusRequest = useRef(0);
   const currentLibraryContext = useRef({
     preferenceRoot: configuredRoot,
     hostId: host.id,
@@ -168,6 +184,13 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
   const captureLock = useRef(false);
   const importCommitLock = useRef(false);
   const applyCommitLock = useRef(false);
+
+  const gistAvailable =
+    gistStatus.hostId === host.id && !gistStatus.checking && gistStatus.available;
+  const gistAvailabilityMessage =
+    gistStatus.hostId !== host.id || gistStatus.checking
+      ? "Checking whether GitHub CLI is available on this Paseo host."
+      : (gistStatus.message ?? "GitHub CLI (gh) is not available on this Paseo host.");
 
   const colors = theme.colors;
   const textStyle = useMemo(() => ({ color: colors.foreground }), [colors.foreground]);
@@ -322,16 +345,43 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
       new Set(
         entries
           .filter(
-            (entry) => canonicalJson(entry.set.profiles) === canonicalJson(currentProfilesValue),
+            (entry) =>
+              canonicalJson(entry.set.profiles) === canonicalJson(currentProfilesValue) &&
+              (entry.set.appendSystemPrompt === undefined ||
+                entry.set.appendSystemPrompt === current?.appendSystemPrompt),
           )
           .map((entry) => entry.localId),
       ),
-    [currentProfilesValue, entries],
+    [currentProfilesValue, current?.appendSystemPrompt, entries],
   );
 
   const setImport = useCallback((update: Partial<ImportDraft>) => {
     setImportDraft((draft) => (draft ? { ...draft, ...update } : draft));
   }, []);
+
+  const refreshGistAvailability = useCallback(async () => {
+    const request = ++gistStatusRequest.current;
+    const targetHostId = host.id;
+    setGistStatus({ hostId: targetHostId, checking: true, available: false, message: null });
+    try {
+      const result = await gistAvailabilityRpc({});
+      if (request !== gistStatusRequest.current) return;
+      setGistStatus({
+        hostId: targetHostId,
+        checking: false,
+        available: result.available,
+        message: result.message ?? null,
+      });
+    } catch (error) {
+      if (request !== gistStatusRequest.current) return;
+      setGistStatus({
+        hostId: targetHostId,
+        checking: false,
+        available: false,
+        message: `Could not check GitHub CLI availability: ${errorMessage(error)}`,
+      });
+    }
+  }, [gistAvailabilityRpc, host.id]);
 
   const openCapture = useCallback(
     (mode: CaptureDraft) => {
@@ -346,6 +396,7 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
   );
 
   const openImport = useCallback(() => {
+    void refreshGistAvailability();
     setImportDraft({
       root: resolvedRoot,
       preferenceRoot: configuredRoot,
@@ -353,6 +404,7 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
       files: [],
       text: "",
       hostPath: "",
+      gistUrl: "",
       mode: "match",
       targetLocalId: "",
       targetFileIndex: -1,
@@ -364,7 +416,7 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
       error: null,
       result: null,
     });
-  }, [configuredRoot, host.id, resolvedRoot]);
+  }, [configuredRoot, host.id, refreshGistAvailability, resolvedRoot]);
 
   const doCapture = useCallback(async () => {
     if (!capture || !current || captureSelected.length === 0 || captureBusy || captureLock.current)
@@ -471,6 +523,36 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
       setBusyAction(null);
     }
   }, [busyAction, detail, detailName, duplicateSetRpc, refreshLibrary, toast]);
+
+  const updateAppearance = useCallback(
+    async (profileId: string, change: { icon?: string; color?: string }) => {
+      if (!detail || busyAction) return;
+      setBusyAction("appearance");
+      setDetailError(null);
+      try {
+        const updated = await saveSetRpc({
+          libraryRoot: detail.root,
+          localId: detail.entry.localId,
+          expectedRevision: detail.entry.revision,
+          set: {
+            ...detail.entry.set,
+            profiles: detail.entry.set.profiles.map((profile) =>
+              profile.id === profileId ? { ...profile, ...change } : profile,
+            ),
+          },
+        });
+        setDetail({ entry: updated, root: detail.root });
+        setHistory(null);
+        await refreshLibrary(detail.root);
+        toast.show("Profile appearance saved in this pack", { variant: "success" });
+      } catch (error) {
+        setDetailError(errorMessage(error));
+      } finally {
+        setBusyAction(null);
+      }
+    },
+    [busyAction, detail, refreshLibrary, saveSetRpc, toast],
+  );
 
   const removeDetail = useCallback(async () => {
     if (!detail || busyAction) return;
@@ -625,6 +707,7 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
         busy: false,
         files: [file],
         text: "",
+        gistUrl: "",
         targetFileIndex: -1,
         targetLocalId: "",
         previewSourceFileIndex: -1,
@@ -637,6 +720,37 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
     }
   }, [importDraft, readHostFileRpc, setImport]);
 
+  const readImportGist = useCallback(async () => {
+    if (!importDraft || importDraft.busy || !importDraft.gistUrl.trim() || !gistAvailable) return;
+    setImport({ busy: true, error: null, result: null, preview: null, apply: null });
+    try {
+      const { files } = await readGistRpc({ url: importDraft.gistUrl.trim() });
+      setImport({
+        busy: false,
+        files,
+        text: "",
+        hostPath: "",
+        mode: "match",
+        targetLocalId: "",
+        targetFileIndex: -1,
+        previewSourceFileIndex: -1,
+        preview: null,
+        apply: null,
+        replaceLocalChanges: false,
+        error: null,
+        result: `Loaded ${files.length} file${files.length === 1 ? "" : "s"} from the Gist. Review the preview before saving or applying.`,
+      });
+    } catch (error) {
+      setImport({
+        busy: false,
+        error: errorMessage(error),
+        preview: null,
+        apply: null,
+        result: null,
+      });
+    }
+  }, [gistAvailable, importDraft, readGistRpc, setImport]);
+
   const selectBrowserFiles = useCallback(async () => {
     if (Platform.OS !== "web" || !importDraft || importDraft.busy) return;
     setImport({ busy: true, error: null });
@@ -646,6 +760,7 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
         setImport({
           files,
           text: "",
+          gistUrl: "",
           busy: false,
           targetFileIndex: -1,
           targetLocalId: "",
@@ -924,6 +1039,8 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
             hostId: host.id,
             sourceName: entry.set.name,
             profiles: entry.set.profiles,
+            appendSystemPrompt: entry.set.appendSystemPrompt,
+            applySystemPrompt: draft.mode === "use",
             selected: [],
             choices: {},
             preview: null,
@@ -943,6 +1060,8 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
         localId: entry.localId,
         sourceName: entry.set.name,
         profiles: entry.set.profiles,
+        appendSystemPrompt: entry.set.appendSystemPrompt,
+        applySystemPrompt: mode === "use",
         root,
         mode,
         selected: [],
@@ -985,6 +1104,9 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
         ...(applyDraft.localId ? { localId: applyDraft.localId } : {}),
         ...(applyDraft.snapshotId ? { snapshotId: applyDraft.snapshotId } : {}),
         mode: applyDraft.mode,
+        ...(applyDraft.applySystemPrompt !== undefined
+          ? { applySystemPrompt: applyDraft.applySystemPrompt }
+          : {}),
         ...(selections ? { selections } : {}),
       });
       setApplyDraft((draft) => (draft ? { ...draft, busy: false, preview } : draft));
@@ -1060,9 +1182,16 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
           ...(profileIds ? { profileIds, expectedCurrentRevision: current?.revision } : {}),
           ...(localIds ? { localIds } : {}),
         });
+        void refreshGistAvailability();
         const initialName = result.files[0]?.name ?? "";
         setExportSelectedName(initialName);
-        setExportState({ files: result.files, error: null, status: null, busy: false });
+        setExportState({
+          files: result.files,
+          error: null,
+          status: null,
+          busy: false,
+          gistUrl: null,
+        });
         setExportPath("");
       } catch (error) {
         setScreenError(errorMessage(error));
@@ -1075,6 +1204,7 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
       busyAction,
       current,
       exportProfilesRpc,
+      refreshGistAvailability,
       resolvedRoot,
       selectedLibrary,
       selectedProfiles,
@@ -1094,8 +1224,9 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
           source: "library",
           localIds: [entry.localId],
         });
+        void refreshGistAvailability();
         setExportSelectedName(files[0]?.name ?? "");
-        setExportState({ files, error: null, status: null, busy: false });
+        setExportState({ files, error: null, status: null, busy: false, gistUrl: null });
         setExportPath("");
       } catch (error) {
         setScreenError(errorMessage(error));
@@ -1104,18 +1235,19 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
         setBusyAction(null);
       }
     },
-    [busyAction, exportProfilesRpc, toast],
+    [busyAction, exportProfilesRpc, refreshGistAvailability, toast],
   );
 
   const copyExportFile = useCallback(
     async (file: TransferFile | undefined) => {
       if (!file || !exportState) return;
-      setExportState({ ...exportState, busy: true, error: null });
+      setExportState({ ...exportState, busy: true, busyAction: "copy", error: null });
       try {
         await copyText(file.text);
         setExportState({
           ...exportState,
           busy: false,
+          busyAction: undefined,
           status: `${file.name} copied to the clipboard.`,
           error: null,
         });
@@ -1124,6 +1256,7 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
         setExportState({
           ...exportState,
           busy: false,
+          busyAction: undefined,
           error: `Clipboard copy failed: ${errorMessage(error)}. Select the YAML below and use Copy.`,
           status: null,
         });
@@ -1150,7 +1283,13 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
     if (!exportState || !exportPath.trim() || exportState.busy) return;
     const basePath = exportPath.trim().replace(/[\\/]+$/, "");
     const files = exportState.files;
-    setExportState({ ...exportState, busy: true, status: null, error: null });
+    setExportState({
+      ...exportState,
+      busy: true,
+      busyAction: "write",
+      status: null,
+      error: null,
+    });
     let written = 0;
     try {
       for (const file of files) {
@@ -1161,6 +1300,7 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
       setExportState({
         ...exportState,
         busy: false,
+        busyAction: undefined,
         status: `${written} file${written === 1 ? "" : "s"} saved on the Paseo host.`,
         error: null,
       });
@@ -1168,6 +1308,7 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
       setExportState({
         ...exportState,
         busy: false,
+        busyAction: undefined,
         status: written
           ? `${written} file${written === 1 ? "" : "s"} saved before the next write failed.`
           : null,
@@ -1175,6 +1316,62 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
       });
     }
   }, [exportPath, exportState, writeHostFileRpc]);
+
+  const createSecretGist = useCallback(async () => {
+    if (!exportState || exportState.busy || !gistAvailable) return;
+    const files = exportState.files;
+    setExportState({
+      ...exportState,
+      busy: true,
+      busyAction: "gist",
+      status: null,
+      error: null,
+    });
+    try {
+      const { url } = await createGistRpc({ files });
+      setExportState({
+        ...exportState,
+        busy: false,
+        busyAction: undefined,
+        status: "Secret Gist created. Anyone with its URL can view the contents.",
+        error: null,
+        gistUrl: url,
+      });
+      toast.show("Secret Gist created", { variant: "success" });
+    } catch (error) {
+      setExportState({
+        ...exportState,
+        busy: false,
+        busyAction: undefined,
+        status: null,
+        error: `Gist creation failed: ${errorMessage(error)}`,
+      });
+    }
+  }, [createGistRpc, exportState, gistAvailable, toast]);
+
+  const copyGistUrl = useCallback(async () => {
+    if (!exportState?.gistUrl || exportState.busy) return;
+    setExportState({ ...exportState, busy: true, busyAction: "gist-url", error: null });
+    try {
+      await copyText(exportState.gistUrl);
+      setExportState({
+        ...exportState,
+        busy: false,
+        busyAction: undefined,
+        status: "Gist URL copied to the clipboard.",
+        error: null,
+      });
+      toast.show("Gist URL copied", { variant: "success" });
+    } catch (error) {
+      setExportState({
+        ...exportState,
+        busy: false,
+        busyAction: undefined,
+        status: null,
+        error: `Could not copy the Gist URL: ${errorMessage(error)}`,
+      });
+    }
+  }, [exportState, toast]);
 
   const openRecovery = useCallback(async () => {
     setRecoveryLoading(true);
@@ -1271,6 +1468,12 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
               </Text>
             </View>
             <View style={styles.buttonRow}>
+              <SelectAllAction
+                ids={entries.map((entry) => entry.localId)}
+                selected={selectedLibrary}
+                disabled={!libraryReady || mainBusy}
+                onChange={setSelectedLibrary}
+              />
               <ActionRow
                 label={`Export selected${selectedLibrary.length ? ` (${selectedLibrary.length})` : ""}`}
                 actionLabel="Export"
@@ -1342,6 +1545,12 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
               </Text>
             </View>
             <View style={styles.buttonRow}>
+              <SelectAllAction
+                ids={currentProfilesValue.map((profile) => profile.id)}
+                selected={selectedProfiles}
+                disabled={!current || currentLoading || mainBusy}
+                onChange={setSelectedProfiles}
+              />
               <ActionRow
                 label="Save selected as pack"
                 actionLabel="Save pack"
@@ -1399,15 +1608,30 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
                       {profile.name || profile.id}
                     </Text>
                     <Text style={mutedStyle} numberOfLines={2}>
-                      {profile.provider}
+                      {profile.provider || "Automatic provider"}
                       {profile.model ? ` · ${profile.model}` : ""} · {profile.id}
                     </Text>
+                    <ProfileAppearance profile={profile} theme={theme} />
                   </View>
                 </View>
               );
             })}
           </SettingsCard>
         </SettingsSection>
+        {current?.appendSystemPrompt ? (
+          <SettingsSection
+            title="Current shared system prompt"
+            info="Included when saving or exporting current profiles."
+          >
+            <SettingsCard>
+              <View style={{ padding: 16 }}>
+                <Text selectable style={textStyle}>
+                  {current.appendSystemPrompt}
+                </Text>
+              </View>
+            </SettingsCard>
+          </SettingsSection>
+        ) : null}
       </ScrollView>
 
       <Modal
@@ -1434,13 +1658,20 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
                 style={fieldStyle}
               />
             ) : null}
-            <Text style={mutedStyle}>{captureSelected.length} selected</Text>
+            <Text style={mutedStyle}>Includes the host's shared system prompt.</Text>
+            <SelectAllAction
+              ids={currentProfilesValue.map((profile) => profile.id)}
+              selected={captureSelected}
+              disabled={captureBusy}
+              onChange={setCaptureSelected}
+            />
             <ScrollView style={{ maxHeight: 340 }} keyboardShouldPersistTaps="handled">
               {currentProfilesValue.map((profile) => (
                 <SelectableProfile
                   key={profile.id}
                   profile={profile}
                   selected={captureSelected.includes(profile.id)}
+                  disabled={captureBusy}
                   theme={theme}
                   onToggle={() =>
                     setCaptureSelected((ids) =>
@@ -1505,6 +1736,9 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
               onRefreshTarget={() => void refreshImportTarget()}
               onChooseFiles={() => void selectBrowserFiles()}
               onReadHostFile={() => void readImportHostFile()}
+              gistAvailable={gistAvailable}
+              gistAvailabilityMessage={gistAvailabilityMessage}
+              onReadGist={() => void readImportGist()}
               onPreview={() => void previewImport()}
               onUpdateAndUse={() => void startUpdateAndUseReview()}
               onCommit={(withApply) => void commitImport(withApply)}
@@ -1530,15 +1764,23 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
               {matchingEntryIds.has(detail.entry.localId) ? (
                 <Text style={{ color: colors.statusSuccess }}>Matches current</Text>
               ) : null}
-              <SettingsSection title="Profiles in this pack">
+              <SettingsSection
+                title="Profiles in this pack"
+                info="Appearance edits are saved in this pack. Apply the pack to update Paseo."
+              >
                 <SettingsCard>
-                  <View style={{ paddingHorizontal: 16 }}>
-                    {detail.entry.set.profiles.map((profile) => (
-                      <ProfileSummary key={profile.id} profile={profile} theme={theme} />
-                    ))}
-                  </View>
+                  {detail.entry.set.profiles.map((profile) => (
+                    <ProfileSummary
+                      key={profile.id}
+                      profile={profile}
+                      theme={theme}
+                      disabled={busyAction !== null}
+                      onChangeAppearance={(change) => void updateAppearance(profile.id, change)}
+                    />
+                  ))}
                 </SettingsCard>
               </SettingsSection>
+              <SharedPromptReview after={detail.entry.set.appendSystemPrompt} theme={theme} />
               <SettingsSection
                 title="Library actions"
                 info="These actions change the saved pack. Use pack and Add selected change the live host catalog after review."
@@ -1724,7 +1966,12 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
                     ? {
                         ...draft,
                         ...update,
-                        preview: update.selected || update.choices ? null : draft.preview,
+                        preview:
+                          update.selected ||
+                          update.choices ||
+                          update.applySystemPrompt !== undefined
+                            ? null
+                            : draft.preview,
                       }
                     : draft,
                 )
@@ -1756,6 +2003,10 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
               onDownload={downloadExportFiles}
               onCopy={(file) => void copyExportFile(file)}
               onWrite={() => void writeExportFiles()}
+              gistAvailable={gistAvailable}
+              gistAvailabilityMessage={gistAvailabilityMessage}
+              onCreateGist={() => void createSecretGist()}
+              onCopyGistUrl={() => void copyGistUrl()}
             />
           ) : null}
         </Modal.Content>
@@ -1835,23 +2086,44 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
 function ProfileSummary({
   profile,
   theme,
+  disabled,
+  onChangeAppearance,
 }: {
   profile: Profile;
   theme: PluginScreenProps["theme"];
+  disabled: boolean;
+  onChangeAppearance(change: { icon?: string; color?: string }): void;
 }) {
+  const [editingAppearance, setEditingAppearance] = useState(false);
   return (
     <View
       style={{ paddingVertical: 8, borderBottomWidth: 1, borderColor: theme.colors.border, gap: 2 }}
     >
-      <Text style={{ color: theme.colors.foreground, fontWeight: "600" }}>
-        {profile.name || profile.id}
-      </Text>
-      <Text style={{ color: theme.colors.foregroundMuted }}>
-        {profile.provider}
-        {profile.model ? ` · ${profile.model}` : ""} · {profile.id}
-      </Text>
-      {profile.notes ? (
-        <Text style={{ color: theme.colors.foregroundMuted }}>{profile.notes}</Text>
+      <View style={{ paddingHorizontal: 16, gap: 2 }}>
+        <Text style={{ color: theme.colors.foreground, fontWeight: "600" }}>
+          {profile.name || profile.id}
+        </Text>
+        <Text style={{ color: theme.colors.foregroundMuted }}>
+          {profile.provider || "Automatic provider"}
+          {profile.model ? ` · ${profile.model}` : ""} · {profile.id}
+        </Text>
+        <ProfileAppearance profile={profile} theme={theme} />
+        {profile.notes ? (
+          <Text style={{ color: theme.colors.foregroundMuted }}>{profile.notes}</Text>
+        ) : null}
+      </View>
+      <ActionRow
+        label="Profile appearance"
+        actionLabel={editingAppearance ? "Done" : "Edit"}
+        disabled={disabled}
+        onPress={() => setEditingAppearance((value) => !value)}
+      />
+      {editingAppearance ? (
+        <ProfileAppearanceFields
+          profile={profile}
+          disabled={disabled}
+          onChange={onChangeAppearance}
+        />
       ) : null}
     </View>
   );
@@ -1860,18 +2132,21 @@ function ProfileSummary({
 function SelectableProfile({
   profile,
   selected,
+  disabled,
   theme,
   onToggle,
 }: {
   profile: Profile;
   selected: boolean;
+  disabled: boolean;
   theme: PluginScreenProps["theme"];
   onToggle(): void;
 }) {
   return (
     <Pressable
       accessibilityRole="checkbox"
-      accessibilityState={{ checked: selected }}
+      accessibilityState={{ checked: selected, disabled }}
+      disabled={disabled}
       onPress={onToggle}
       style={{
         flexDirection: "row",
@@ -1886,8 +2161,9 @@ function SelectableProfile({
       <View style={{ flex: 1 }}>
         <Text style={{ color: theme.colors.foreground }}>{profile.name || profile.id}</Text>
         <Text style={{ color: theme.colors.foregroundMuted }}>
-          {profile.provider} · {profile.id}
+          {profile.provider || "Automatic provider"} · {profile.id}
         </Text>
+        <ProfileAppearance profile={profile} theme={theme} />
       </View>
     </Pressable>
   );

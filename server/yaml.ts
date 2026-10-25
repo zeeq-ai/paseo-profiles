@@ -34,15 +34,29 @@ export function parseSet(
   const value: unknown = doc.toJS({ maxAliasCount: 0 });
   if (value && typeof value === "object" && "format" in value)
     return { set: SetSchema.parse(value), hasIdentity: true };
-  // Legacy persisted/mutable config is projected; unrelated configuration never enters the library.
-  const raw = value as { daemon?: { agentProfiles?: unknown }; agentProfiles?: unknown } | null;
-  const profiles = raw?.daemon?.agentProfiles ?? raw?.agentProfiles;
+  // Project only portable profile settings from persisted or mutable daemon configuration.
+  const raw = value as {
+    daemon?: { agentProfiles?: unknown; appendSystemPrompt?: unknown };
+    agentProfiles?: unknown;
+    appendSystemPrompt?: unknown;
+  } | null;
+  const source = raw?.daemon?.agentProfiles !== undefined ? raw.daemon : raw;
+  const profiles = source?.agentProfiles;
   if (!profiles)
     throw new Error(
       "Expected a profile-pack document or Paseo configuration containing agentProfiles",
     );
   return {
-    set: SetSchema.parse({ format: "paseo-profile-set", version: 1, id: "legacy", name, profiles }),
+    set: SetSchema.parse({
+      format: "paseo-profile-set",
+      version: 1,
+      id: "legacy",
+      name,
+      profiles,
+      ...(source?.appendSystemPrompt !== undefined
+        ? { appendSystemPrompt: source.appendSystemPrompt }
+        : {}),
+    }),
     hasIdentity: false,
   };
 }

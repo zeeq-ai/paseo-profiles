@@ -35,6 +35,7 @@ export type ImportDraft = {
   files: { name: string; text: string }[];
   text: string;
   hostPath: string;
+  gistUrl: string;
   mode: ImportMode;
   targetLocalId: string;
   targetFileIndex: number;
@@ -56,6 +57,8 @@ export type ApplyDraft = {
   snapshotId?: string;
   sourceName?: string;
   profiles?: Profile[];
+  appendSystemPrompt?: string;
+  applySystemPrompt?: boolean;
   mode: "use" | "add" | "restore";
   selected: string[];
   choices: Record<string, SelectionChoice>;
@@ -73,4 +76,6 @@ export type ExportState = {
   error: string | null;
   status: string | null;
   busy: boolean;
+  busyAction?: "copy" | "write" | "gist" | "gist-url";
+  gistUrl?: string | null;
 };

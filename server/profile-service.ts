@@ -24,6 +24,7 @@ import {
   writeJson,
 } from "./files";
 import { type ImportMetadata, LibraryStore } from "./library-store";
+import { resolveProfileSettings } from "./provider-settings";
 import { parseSet, serializeSet } from "./yaml";
 
 export interface PaseoAdapter {
@@ -53,6 +54,8 @@ interface ApplyPlan {
   expires: number;
   before: Profile[];
   target: Profile[];
+  beforeSystemPrompt: string;
+  targetSystemPrompt?: string;
   beforeHash: string;
   sourceName: string;
   localId?: string;
@@ -72,12 +75,15 @@ interface Operation {
   target: Profile[];
   beforeHash: string;
   targetHash: string;
+  beforeSystemPrompt?: string;
+  targetSystemPrompt?: string;
   error?: string;
 }
 interface Snapshot {
   id: string;
   createdAt: string;
   profiles: Profile[];
+  appendSystemPrompt?: string;
 }
 export class ProfileService {
   readonly home: string;
@@ -172,7 +178,11 @@ export class ProfileService {
     return { fingerprint: hash(["paseo-profile-origin", 1, serverId, sourcePath]) };
   }
   private async live() {
-    return ProfilesSchema.parse((await this.paseo.config.get()).config.agentProfiles ?? []);
+    const { config } = await this.paseo.config.get();
+    return {
+      profiles: ProfilesSchema.parse(config.agentProfiles ?? []),
+      appendSystemPrompt: config.appendSystemPrompt ?? "",
+    };
   }
   async warnings(profiles: Profile[]): Promise<string[]> {
     if (!this.paseo.providers)
@@ -189,7 +199,11 @@ export class ProfileService {
         else if (
           profile.model &&
           provider.models &&
-          !provider.models.some((model) => model.id === profile.model)
+          !provider.models.some(
+            (model) =>
+              model.isSelectable !== false &&
+              (model.id === profile.model || model.aliases?.includes(profile.model as string)),
+          )
         )
           warnings.push(
             `${profile.name}: model ${profile.model} is not in the current provider catalog.`,
@@ -203,12 +217,12 @@ export class ProfileService {
     }
   }
   async currentProfiles(_input: RpcInput<typeof contracts.currentProfiles> = {}) {
-    const profiles = await this.live();
+    const current = await this.live();
     return {
-      profiles,
-      revision: hash(profiles),
+      ...current,
+      revision: hash(current),
       origin: await this.origin(),
-      warnings: await this.warnings(profiles),
+      warnings: await this.warnings(current.profiles),
     };
   }
   private select(profiles: Profile[], ids?: string[]) {
@@ -220,11 +234,11 @@ export class ProfileService {
     return profiles.filter((p) => chosen.has(p.id));
   }
   async captureCurrent(input: RpcInput<typeof contracts.captureCurrent>) {
-    const profiles = await this.live();
-    if (hash(profiles) !== input.expectedCurrentRevision)
+    const current = await this.live();
+    if (hash(current) !== input.expectedCurrentRevision)
       throw new Error("Current profiles changed. Refresh and review again.");
     const store = await this.store(input.libraryRoot);
-    const selected = this.select(profiles, input.profileIds);
+    const selected = this.select(current.profiles, input.profileIds);
     return store.locked(async () => {
       const previous = input.localId
         ? await store.assertRevision(input.localId, input.expectedRevision)
@@ -237,6 +251,7 @@ export class ProfileService {
         origin: previous?.set.origin ?? (await this.origin()),
         ...(previous?.set.copiedFrom ? { copiedFrom: previous.set.copiedFrom } : {}),
         profiles: selected,
+        appendSystemPrompt: current.appendSystemPrompt,
       });
       return store.saveUnlocked(set, input.localId, input.expectedRevision);
     });
@@ -244,8 +259,8 @@ export class ProfileService {
   async exportProfiles(input: RpcInput<typeof contracts.exportProfiles>) {
     const sets: ProfileSet[] = [];
     if (input.source === "current") {
-      const profiles = await this.live();
-      if (input.expectedCurrentRevision && hash(profiles) !== input.expectedCurrentRevision)
+      const current = await this.live();
+      if (input.expectedCurrentRevision && hash(current) !== input.expectedCurrentRevision)
         throw new Error("Current profiles changed. Review the selection again.");
       sets.push(
         SetSchema.parse({
@@ -254,7 +269,8 @@ export class ProfileService {
           id: randomUUID(),
           name: input.name ?? "Current agent profiles",
           origin: await this.origin(),
-          profiles: this.select(profiles, input.profileIds),
+          profiles: this.select(current.profiles, input.profileIds),
+          appendSystemPrompt: current.appendSystemPrompt,
         }),
       );
     } else {
@@ -446,14 +462,17 @@ export class ProfileService {
   }
   async applyPreview(input: RpcInput<typeof contracts.applyPreview>) {
     const store = await this.store(input.libraryRoot);
-    const before = await this.live();
+    const current = await this.live();
+    const before = current.profiles;
     let profiles: Profile[], sourceName: string, entry: LibraryEntry | undefined;
+    let targetSystemPrompt: string | undefined;
     if (input.importPreviewId) {
       const plan = this.plan(this.imports, input.importPreviewId, store);
       if (plan.items.length !== 1) throw new Error("Update and use reviews one pack at a time");
       const item = plan.items[0];
-      profiles =
-        item.sourceUnchanged && item.target ? item.target.set.profiles : item.incoming.profiles;
+      const source = item.sourceUnchanged && item.target ? item.target.set : item.incoming;
+      profiles = source.profiles;
+      targetSystemPrompt = source.appendSystemPrompt;
       sourceName = item.incoming.name;
     } else if (input.snapshotId) {
       if (input.mode !== "restore") throw new Error("Recovery snapshots require restore mode");
@@ -462,12 +481,43 @@ export class ProfileService {
       );
       if (!snapshot) throw new Error("Recovery snapshot not found");
       profiles = ProfilesSchema.parse(snapshot.profiles);
+      targetSystemPrompt = snapshot.appendSystemPrompt;
       sourceName = "Previous agent-profile list";
     } else {
       if (!input.localId) throw new Error("Choose a saved pack");
       entry = await store.read(input.localId);
       profiles = entry.set.profiles;
+      targetSystemPrompt = entry.set.appendSystemPrompt;
       sourceName = entry.set.name;
+    }
+    // Adding a few profiles should not also replace a host-wide prompt unless selected.
+    if (input.mode !== "restore" && !(input.applySystemPrompt ?? input.mode === "use"))
+      targetSystemPrompt = undefined;
+    let warnings: string[];
+    if (input.mode === "restore" || !this.paseo.providers) {
+      warnings = await this.warnings(profiles);
+    } else {
+      try {
+        const selected = profiles.filter(
+          (profile) =>
+            input.mode !== "add" ||
+            input.selections?.some(
+              (selection) => selection.profileId === profile.id && selection.action !== "skip",
+            ),
+        );
+        const resolved = resolveProfileSettings(
+          selected,
+          (await this.paseo.providers.snapshot()).entries,
+          before,
+        );
+        const byId = new Map(resolved.profiles.map((profile) => [profile.id, profile]));
+        profiles = profiles.map((profile) => byId.get(profile.id) ?? profile);
+        warnings = resolved.warnings;
+      } catch (error) {
+        warnings = [
+          `Provider availability could not be checked: ${errorText(error)}. Saved settings are preserved.`,
+        ];
+      }
     }
     let target = profiles;
     if (input.mode === "add") {
@@ -505,6 +555,8 @@ export class ProfileService {
       expires: Date.now() + 15 * 60_000,
       before,
       target,
+      beforeSystemPrompt: current.appendSystemPrompt,
+      targetSystemPrompt,
       beforeHash: hash(before),
       sourceName,
       localId: entry?.localId,
@@ -517,8 +569,11 @@ export class ProfileService {
       before,
       target,
       diff: profilesDiff(before, target),
-      warnings: await this.warnings(target),
+      warnings,
       sourceName,
+      ...(targetSystemPrompt !== undefined
+        ? { systemPrompt: { before: current.appendSystemPrompt, target: targetSystemPrompt } }
+        : {}),
     };
   }
   private async hostLocked<T>(action: () => Promise<T>): Promise<T> {
@@ -540,8 +595,17 @@ export class ProfileService {
     if (plan.localId) await store.assertRevision(plan.localId, plan.revision);
     if (plan.importPreviewId && !combined)
       throw new Error("Update and use must be committed through the import review");
-    if (hash(await this.live()) !== plan.beforeHash)
+    await this.checkLiveApply(plan);
+  }
+  private async checkLiveApply(plan: ApplyPlan) {
+    const current = await this.live();
+    if (hash(current.profiles) !== plan.beforeHash)
       throw new Error("Current agent profiles changed. Create a fresh preview.");
+    if (
+      plan.targetSystemPrompt !== undefined &&
+      current.appendSystemPrompt !== plan.beforeSystemPrompt
+    )
+      throw new Error("Shared system prompt changed. Create a fresh preview.");
   }
   async applyCommit(input: RpcInput<typeof contracts.applyCommit>) {
     const store = await this.store(input.libraryRoot);
@@ -567,26 +631,41 @@ export class ProfileService {
       target: plan.target,
       beforeHash: plan.beforeHash,
       targetHash: hash(plan.target),
+      beforeSystemPrompt: plan.beforeSystemPrompt,
+      targetSystemPrompt: plan.targetSystemPrompt,
     };
     const file = path.join(store.state, "operations", `${id}.json`);
     try {
       await this.fault("beforeSnapshotWrite");
       await writeJson(
         path.join(store.state, "snapshots", `${id}.json`),
-        { id, createdAt: operation.createdAt, profiles: plan.before },
+        {
+          id,
+          createdAt: operation.createdAt,
+          profiles: plan.before,
+          appendSystemPrompt: plan.beforeSystemPrompt,
+        },
         true,
       );
       await this.fault("beforeJournalWrite");
       await writeJson(file, operation, true);
       await this.store(plan.root, false);
-      if (hash(await this.live()) !== plan.beforeHash)
-        throw new Error("Current profiles changed before application. Review again.");
+      await this.checkLiveApply(plan);
       await this.fault("beforeConfigPatch");
-      const response = await this.paseo.config.patch({ agentProfiles: plan.target });
+      const response = await this.paseo.config.patch({
+        agentProfiles: plan.target,
+        ...(plan.targetSystemPrompt !== undefined
+          ? { appendSystemPrompt: plan.targetSystemPrompt }
+          : {}),
+      });
       await this.fault("afterConfigPatch");
+      const applied = await this.live();
       if (
         hash(ProfilesSchema.parse(response.config.agentProfiles ?? [])) !== operation.targetHash ||
-        hash(await this.live()) !== operation.targetHash
+        hash(applied.profiles) !== operation.targetHash ||
+        (plan.targetSystemPrompt !== undefined &&
+          (response.config.appendSystemPrompt !== plan.targetSystemPrompt ||
+            applied.appendSystemPrompt !== plan.targetSystemPrompt))
       )
         throw new Error("Applied result differs from the reviewed target; inspect recovery");
       operation.status = "complete";
@@ -617,7 +696,8 @@ export class ProfileService {
   async recoveryList(input: RpcInput<typeof contracts.recoveryList>) {
     const store = await this.store(input.libraryRoot);
     return this.hostLocked(async () => {
-      const liveHash = hash(await this.live());
+      const current = await this.live();
+      const liveHash = hash(current.profiles);
       const operations: Operation[] = [],
         snapshots: { id: string; createdAt: string; profileCount: number }[] = [];
       for (const kind of ["operations", "snapshots"] as const) {
@@ -644,9 +724,13 @@ export class ProfileService {
             if (!operation) continue;
             if (operation.status !== "complete") {
               operation.status =
-                liveHash === operation.targetHash
+                liveHash === operation.targetHash &&
+                (operation.targetSystemPrompt === undefined ||
+                  current.appendSystemPrompt === operation.targetSystemPrompt)
                   ? "complete"
-                  : liveHash === operation.beforeHash
+                  : liveHash === operation.beforeHash &&
+                      (operation.targetSystemPrompt === undefined ||
+                        current.appendSystemPrompt === operation.beforeSystemPrompt)
                     ? "not-applied"
                     : "ambiguous";
               await writeJson(file, operation);

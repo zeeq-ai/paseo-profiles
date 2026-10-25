@@ -6,6 +6,26 @@ const root = { libraryRoot: z.string().default("") };
 const id = z.string().regex(/^[a-zA-Z0-9_-]+$/);
 const file = z.object({ name: z.string(), text: z.string().max(LIMITS.bytes) });
 const exported = z.object({ name: z.string(), text: z.string() });
+const gistFile = z.object({
+  name: z.string().min(1).max(255),
+  text: z.string().max(LIMITS.bytes),
+});
+const gistFiles = z
+  .array(gistFile)
+  .min(1)
+  .max(LIMITS.files)
+  .superRefine((files, ctx) => {
+    const names = new Set<string>();
+    let totalCharacters = 0;
+    for (const [index, item] of files.entries()) {
+      if (names.has(item.name))
+        ctx.addIssue({ code: "custom", path: [index, "name"], message: "Duplicate file name" });
+      names.add(item.name);
+      totalCharacters += item.text.length;
+    }
+    if (totalCharacters > LIMITS.bytes * LIMITS.files)
+      ctx.addIssue({ code: "custom", message: "Gist contents exceed the transfer size limit" });
+  });
 const rpc = <I extends z.ZodType, O extends z.ZodType>(name: string, input: I, output: O) =>
   defineRpc({ name, input, output });
 export const listLibrary = rpc(
@@ -43,6 +63,7 @@ export const currentProfiles = rpc(
   z.object({}),
   z.object({
     profiles: ProfilesSchema,
+    appendSystemPrompt: z.string(),
     revision: z.string(),
     origin: z.object({ fingerprint: z.string() }),
     warnings: z.array(z.string()),
@@ -71,6 +92,21 @@ export const exportProfiles = rpc(
     expectedCurrentRevision: z.string().optional(),
   }),
   z.object({ files: z.array(exported) }),
+);
+export const gistAvailability = rpc(
+  "gist.availability",
+  z.object({}),
+  z.object({ available: z.boolean(), message: z.string().optional() }),
+);
+export const createGist = rpc(
+  "gist.create",
+  z.object({ files: gistFiles }),
+  z.object({ url: z.string().url() }),
+);
+export const readGist = rpc(
+  "gist.read",
+  z.object({ url: z.string().trim().min(1).max(500) }),
+  z.object({ files: gistFiles }),
 );
 export const importPreview = rpc(
   "import.preview",
@@ -130,6 +166,7 @@ export const applyPreview = rpc(
     importPreviewId: z.string().optional(),
     snapshotId: id.optional(),
     mode: z.enum(["use", "add", "restore"]),
+    applySystemPrompt: z.boolean().optional(),
     selections: z.array(selection).optional(),
   }),
   z.object({
@@ -139,6 +176,7 @@ export const applyPreview = rpc(
     diff: DiffSchema,
     warnings: z.array(z.string()),
     sourceName: z.string(),
+    systemPrompt: z.object({ before: z.string(), target: z.string() }).optional(),
   }),
 );
 export const applyCommit = rpc(

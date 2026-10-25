@@ -11,7 +11,23 @@ Verified against Paseo daemon, app assets, and plugin SDK 0.11.2 on macOS with N
 
 The E2E harness installs this directory plugin into its own enabled daemon, uses a separate home and ephemeral port, and removes that temporary runtime afterward.
 
-Final local gates passed: `npm run check` (typecheck, lint, 27 unit tests in 5 files), `npm run test:e2e` (3 RPC tests against an isolated daemon), and `npm pack --dry-run --json` (all runtime files included).
+Original local gates passed: `npm run check` (typecheck, lint, 27 unit tests in 5 files), `npm run test:e2e` (3 RPC tests against an isolated daemon), and `npm pack --dry-run --json` (all runtime files included).
+
+## Appearance, portability, shared prompts, and selection additions (2026-10-25)
+
+The additions typecheck against the minimum Paseo SDK 0.11.2. `npm run check` passes 43 unit tests in 6 files. `PASEO_PROFILES_CLI_VERSION=0.13.0 npm run test:e2e` passes 4 RPC tests against the installed Paseo 0.13.0 in an isolated home. `npm pack --dry-run` includes the new runtime modules.
+
+New tests cover omitted provider/model/appearance values, selectable default models, configured local choices, model aliases, unavailable providers and catalogs, clearing incompatible provider settings on fallback, and preservation of the portable library copy. Shared-prompt tests cover capture/export, raw configuration projection, Add preserving the prompt by default, explicit prompt application and clearing, prompt-only stale previews, recovery restoration, and uncertain prompt-only operations. The real-daemon RPC flow imports future appearance values, applies profiles, transfers the shared prompt, and restores it from a snapshot.
+
+The Staff Engineer II and End-User Customer Advocate reviewed the additions using a disposable Paseo 0.13.0 host. Their review led to an explicit shared-prompt switch (off for Add), confirmation labels that name prompt replacement or clearing, unavailable-value explanations, scoped Select all/Clear selection controls, and disabled inputs during preview/save. Compact appearance selectors use short labels and native row padding to keep long profile names readable.
+
+Browser checks covered 1280px desktop and 390×844 compact screens in light and dark themes. A populated fixture included long names/notes, unknown appearance values, an unavailable provider/model, and a shared prompt. Reviewers verified library-only appearance edits, destination fallback messages, independent Library/Current/Capture/Add selections, capture scrolling, Add prompt opt-in with preview invalidation, and Use prompt opt-out. The compact confirmation description wrapped beside its action button without clipping.
+
+## GitHub Gist transfer addition (2026-10-25)
+
+The export flow creates secret (unlisted) GitHub Gists through the authenticated `gh` CLI on the selected daemon. The import flow reads YAML/JSON files from HTTPS `gist.github.com` URLs into the existing preview; it does not apply imported contents. Both actions are disabled until the daemon reports `gh` available. Transfers enforce the existing 16-file and 512 KB per-file limits, and the UI warns that secret Gists are not access-controlled and that only trusted Gists should be loaded.
+
+This addition passed scoped Biome checks and `npm run typecheck`. No live authenticated GitHub Gist create/read operation or rendered browser flow was run.
 
 ## Browser checks
 

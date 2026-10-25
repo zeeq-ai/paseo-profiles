@@ -1,6 +1,11 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
-import { SettingsCard, SettingsSection, SettingsSelect } from "@getpaseo/plugin/client/ui";
+import {
+  SettingsCard,
+  SettingsSection,
+  SettingsSelect,
+  SettingsSwitch,
+} from "@getpaseo/plugin/client/ui";
 import { Platform, Pressable, Text, View } from "react-native";
 import { canonicalJson } from "../shared/canonical";
 import type { LibraryEntry, Profile } from "../shared/set";
@@ -12,7 +17,10 @@ import type {
   ImportDraft,
   SelectionChoice,
 } from "./models";
+import { ProfileAppearance } from "./profile-appearance";
 import { ProfileDiffReview } from "./profile-diff-review";
+import { SelectAllAction } from "./select-all-action";
+import { SharedPromptReview } from "./shared-prompt-review";
 
 const stack = { gap: 8 };
 const field = { borderWidth: 1, borderRadius: 8, padding: 12, minHeight: 44 };
@@ -37,6 +45,9 @@ export function ImportReview({
   onRefreshTarget,
   onChooseFiles,
   onReadHostFile,
+  gistAvailable,
+  gistAvailabilityMessage,
+  onReadGist,
   onPreview,
   onUpdateAndUse,
   onCommit,
@@ -49,6 +60,9 @@ export function ImportReview({
   onRefreshTarget(): void;
   onChooseFiles(): void;
   onReadHostFile(): void;
+  gistAvailable: boolean;
+  gistAvailabilityMessage: string;
+  onReadGist(): void;
   onPreview(): void;
   onUpdateAndUse(): void;
   onCommit(withApply: boolean): void;
@@ -108,7 +122,7 @@ export function ImportReview({
         ? "Update saved pack"
         : draft.mode === "new"
           ? "Import as copy"
-          : "Import matched pack"
+          : "Save new pack to library"
       : draft.mode === "new"
         ? `Import ${draft.preview?.items.length ?? 0} copies`
         : `Save ${draft.preview?.items.length ?? 0} matched packs`;
@@ -158,6 +172,7 @@ export function ImportReview({
                 onPatch({
                   text,
                   files: [],
+                  gistUrl: "",
                   targetFileIndex: -1,
                   targetLocalId: "",
                   previewSourceFileIndex: -1,
@@ -187,12 +202,49 @@ export function ImportReview({
               ]}
               editable={!draft.busy}
             />
+            <TextInput
+              accessibilityLabel="GitHub Gist URL"
+              placeholder="https://gist.github.com/owner/id"
+              placeholderTextColor={colors.foregroundMuted}
+              value={draft.gistUrl}
+              onChangeText={(gistUrl) =>
+                onPatch({
+                  gistUrl,
+                  files: [],
+                  text: "",
+                  targetFileIndex: -1,
+                  targetLocalId: "",
+                  previewSourceFileIndex: -1,
+                  preview: null,
+                  apply: null,
+                  error: null,
+                  result: null,
+                })
+              }
+              style={[
+                field,
+                textStyle,
+                { borderColor: colors.border, backgroundColor: colors.surface1 },
+              ]}
+              editable={!draft.busy}
+            />
+            <Text style={mutedStyle}>
+              Only load Gists from sources you trust. Review the files before saving or applying;
+              contents are imported as data and not executed.
+            </Text>
           </View>
           <ActionRow
             label="Read a file from the Paseo host"
             actionLabel={draft.busy ? "Reading…" : "Read"}
             disabled={draft.busy || !draft.hostPath.trim()}
             onPress={onReadHostFile}
+          />
+          <ActionRow
+            label="Load files from a trusted GitHub Gist"
+            actionLabel={draft.busy ? "Loading…" : "Load gist"}
+            hint={!gistAvailable ? gistAvailabilityMessage : undefined}
+            disabled={draft.busy || !draft.gistUrl.trim() || !gistAvailable}
+            onPress={onReadGist}
           />
         </SettingsCard>
       </SettingsSection>
@@ -320,6 +372,19 @@ export function ImportReview({
                         ? "Local edits retained"
                         : "Incoming profile changes"
                     }
+                  />
+                  <SharedPromptReview
+                    before={
+                      item.sourceUnchanged && item.localChanges
+                        ? item.incoming.appendSystemPrompt
+                        : item.target?.set.appendSystemPrompt
+                    }
+                    after={
+                      item.sourceUnchanged && item.localChanges
+                        ? item.target?.set.appendSystemPrompt
+                        : item.incoming.appendSystemPrompt
+                    }
+                    theme={theme}
                   />
                   {item.candidates.length ? (
                     <Text style={mutedStyle}>
@@ -534,12 +599,33 @@ export function ApplyReview({
           list.
         </Text>
       ) : null}
+      {draft.kind === "set" && draft.appendSystemPrompt !== undefined ? (
+        <SettingsCard>
+          <SettingsSwitch
+            label={
+              draft.appendSystemPrompt === ""
+                ? "Clear shared system prompt"
+                : "Apply pack's shared system prompt"
+            }
+            hint="Shared by agents on this host; takes effect when sessions start or restart."
+            value={draft.applySystemPrompt ?? draft.mode === "use"}
+            disabled={draft.busy || targetChanged}
+            onValueChange={(applySystemPrompt) => onPatch({ applySystemPrompt, preview: null })}
+          />
+        </SettingsCard>
+      ) : null}
       {draft.mode === "add" ? (
         <SettingsSection
           title="Select profiles and collision actions"
           info="Unselected profiles are skipped. Exact duplicates default to Skip; same-ID differences default to Keep both."
         >
           <SettingsCard>
+            <SelectAllAction
+              ids={profiles.map((profile) => profile.id)}
+              selected={draft.selected}
+              disabled={draft.busy || targetChanged}
+              onChange={(selected) => onPatch({ selected, preview: null })}
+            />
             {profiles.map((profile) => {
               const selected = draft.selected.includes(profile.id);
               const choice = draft.choices[profile.id] ?? defaultChoices([profile])[profile.id];
@@ -559,7 +645,11 @@ export function ApplyReview({
                 >
                   <Pressable
                     accessibilityRole="checkbox"
-                    accessibilityState={{ checked: selected }}
+                    accessibilityState={{
+                      checked: selected,
+                      disabled: draft.busy || targetChanged,
+                    }}
+                    disabled={draft.busy || targetChanged}
                     onPress={() =>
                       onPatch({
                         selected: selected
@@ -580,15 +670,17 @@ export function ApplyReview({
                     <View style={{ flex: 1 }}>
                       <Text style={textStyle}>{profile.name || profile.id}</Text>
                       <Text style={mutedStyle}>
-                        {profile.provider}
+                        {profile.provider || "Automatic provider"}
                         {profile.model ? ` · ${profile.model}` : ""} · {profile.id}
                       </Text>
+                      <ProfileAppearance profile={profile} theme={theme} />
                     </View>
                   </Pressable>
                   {selected ? (
                     <>
                       <SettingsSelect
                         label="When adding this profile"
+                        disabled={draft.busy || targetChanged}
                         value={choice.action}
                         options={[
                           { label: "Add profile", value: "add" },
@@ -608,7 +700,7 @@ export function ApplyReview({
                           label="Current profile to replace"
                           value={choice.targetId ?? ""}
                           options={[{ label: "Choose current profile", value: "" }, ...targets]}
-                          disabled={targets.length === 0}
+                          disabled={draft.busy || targetChanged || targets.length === 0}
                           onValueChange={(targetId) =>
                             onPatch({
                               choices: { ...draft.choices, [profile.id]: { ...choice, targetId } },
@@ -648,8 +740,18 @@ export function ApplyReview({
               draft.busy
                 ? "Applying…"
                 : draft.mode === "add"
-                  ? "Add selected profiles"
-                  : "Replace current profiles"
+                  ? draft.preview.systemPrompt &&
+                    draft.preview.systemPrompt.before !== draft.preview.systemPrompt.target
+                    ? draft.preview.systemPrompt.target === ""
+                      ? "Add profiles and clear shared prompt"
+                      : "Add profiles and replace shared prompt"
+                    : "Add selected profiles"
+                  : draft.preview.systemPrompt &&
+                      draft.preview.systemPrompt.before !== draft.preview.systemPrompt.target
+                    ? draft.preview.systemPrompt.target === ""
+                      ? "Replace profiles and clear shared prompt"
+                      : "Replace profiles and shared prompt"
+                    : "Replace current profiles"
             }
             actionLabel={
               draft.busy
@@ -691,6 +793,18 @@ export function ApplyReviewSummary({
   return (
     <View style={stack}>
       <Text style={style}>Review: {preview.sourceName}</Text>
+      {preview.systemPrompt ? (
+        <>
+          <Text style={warning}>
+            Shared by agents on this host; takes effect when sessions start or restart.
+          </Text>
+          <SharedPromptReview
+            before={preview.systemPrompt.before}
+            after={preview.systemPrompt.target}
+            theme={theme}
+          />
+        </>
+      ) : null}
       <ProfileDiffReview
         before={preview.before}
         after={preview.target}
@@ -717,6 +831,10 @@ export function ExportReview({
   onDownload,
   onCopy,
   onWrite,
+  gistAvailable,
+  gistAvailabilityMessage,
+  onCreateGist,
+  onCopyGistUrl,
 }: {
   value: ExportState;
   path: string;
@@ -727,6 +845,10 @@ export function ExportReview({
   onDownload(): void;
   onCopy(file: { name: string; text: string } | undefined): void;
   onWrite(): void;
+  gistAvailable: boolean;
+  gistAvailabilityMessage: string;
+  onCreateGist(): void;
+  onCopyGistUrl(): void;
 }) {
   const { colors } = theme;
   const textStyle = { color: colors.foreground };
@@ -743,6 +865,40 @@ export function ExportReview({
         <Text accessibilityRole="alert" style={dangerStyle}>
           {value.error}
         </Text>
+      ) : null}
+      <Text style={mutedStyle}>
+        All selected YAML files, including profile notes and the shared prompt, are sent to GitHub.
+        Secret Gists are unlisted, not access-controlled; anyone with the URL can view them.
+      </Text>
+      <ActionRow
+        label="Create a secret GitHub Gist"
+        actionLabel={value.busyAction === "gist" ? "Creating…" : "Create gist"}
+        hint={!gistAvailable ? gistAvailabilityMessage : undefined}
+        disabled={value.busy || !gistAvailable || value.files.length === 0 || !!value.gistUrl}
+        onPress={onCreateGist}
+      />
+      {value.gistUrl ? (
+        <View style={stack}>
+          <Text style={textStyle}>Gist URL</Text>
+          <TextInput
+            accessibilityLabel="Created GitHub Gist URL"
+            value={value.gistUrl}
+            editable={false}
+            multiline
+            selectTextOnFocus
+            style={[
+              field,
+              textStyle,
+              { borderColor: colors.border, backgroundColor: colors.surface1 },
+            ]}
+          />
+          <ActionRow
+            label="Copy Gist URL"
+            actionLabel={value.busyAction === "gist-url" ? "Copying…" : "Copy"}
+            disabled={value.busy}
+            onPress={onCopyGistUrl}
+          />
+        </View>
       ) : null}
       {Platform.OS === "web" ? (
         <ActionRow
@@ -761,8 +917,8 @@ export function ExportReview({
         />
       ) : null}
       <ActionRow
-        label={value.busy ? "Copying YAML…" : "Copy selected YAML"}
-        actionLabel={value.busy ? "Copying…" : "Copy"}
+        label={value.busyAction === "copy" ? "Copying YAML…" : "Copy selected YAML"}
+        actionLabel={value.busyAction === "copy" ? "Copying…" : "Copy"}
         disabled={value.busy || !selected}
         onPress={() => onCopy(selected)}
       />
@@ -784,8 +940,8 @@ export function ExportReview({
           : "Saves one file per pack inside this folder on the selected Paseo host."}
       </Text>
       <ActionRow
-        label={value.busy ? "Writing YAML…" : "Write YAML to host path"}
-        actionLabel={value.busy ? "Writing…" : "Write"}
+        label={value.busyAction === "write" ? "Writing YAML…" : "Write YAML to host path"}
+        actionLabel={value.busyAction === "write" ? "Writing…" : "Write"}
         disabled={value.busy || !path.trim()}
         onPress={onWrite}
       />

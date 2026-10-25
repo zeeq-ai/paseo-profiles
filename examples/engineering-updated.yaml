@@ -2,14 +2,20 @@ format: paseo-profile-set
 version: 1
 id: example-engineering-team
 name: Engineering team
+appendSystemPrompt: |
+  Prefer small, reviewable changes and report the verification performed.
 profiles:
   - id: engineering-review
     name: Engineering review
     provider: codex
+    icon: eye
+    color: violet
     notes: |
       Review correctness, edge cases, concurrency, and missing verification.
   - id: engineering-ui
     name: Engineering UI
     provider: codex
+    icon: palette
+    color: sky
     notes: |
       Build interfaces using the project's design system and native components.
