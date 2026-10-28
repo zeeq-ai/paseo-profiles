@@ -1,5 +1,15 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import {
+  GistInspectionSchema,
+  GistLinkPreviewSchema,
+  GistOperationActionSchema,
+  GistOperationSchema,
+  GistPublishOutcomeSchema,
+  GistPublishPreviewSchema,
+  GistStatusSchema,
+  GistStorageSchema,
+} from "./gist";
 import { DiffSchema, EntrySchema, LIMITS, ProfilesSchema, SetSchema } from "./set";
 
 const root = { libraryRoot: z.string().default("") };
@@ -90,6 +100,8 @@ export const exportProfiles = rpc(
     profileIds: z.array(z.string()).optional(),
     name: z.string().optional(),
     expectedCurrentRevision: z.string().optional(),
+    /** Full-pack library exports carry a portable Gist link unless excluded. */
+    excludeGistLink: z.boolean().optional(),
   }),
   z.object({ files: z.array(exported) }),
 );
@@ -105,8 +117,116 @@ export const createGist = rpc(
 );
 export const readGist = rpc(
   "gist.read",
-  z.object({ url: z.string().trim().min(1).max(500) }),
+  z.object({
+    url: z.string().trim().min(1).max(500),
+    fileName: z.string().min(1).max(255).optional(),
+  }),
   z.object({ files: gistFiles }),
+);
+const gistId = z.string().regex(/^[a-fA-F0-9]{5,64}$/);
+const gistFileName = z.string().min(1).max(255);
+const repositoryPath = z.string().trim().min(1).max(4096);
+export const inspectGist = rpc(
+  "gist.inspect",
+  z.object({
+    ...root,
+    url: z.string().trim().min(1).max(500).optional(),
+    gistId: gistId.optional(),
+    /** Saved pack to compare against: marks files with the same pack ID. */
+    localId: id.optional(),
+  }),
+  GistInspectionSchema,
+);
+export const gistStatus = rpc(
+  "gist.status",
+  z.object({
+    ...root,
+    /** Omit for every saved pack (cached, local-only). `check` requires exactly one. */
+    localIds: z.array(id).max(500).optional(),
+    /** Consult GitHub as the host's `gh` account. Never done for a list. */
+    check: z.boolean().default(false),
+  }),
+  z.object({ statuses: z.array(GistStatusSchema) }),
+);
+export const gistLinkPreview = rpc(
+  "gist.link.preview",
+  z.object({
+    ...root,
+    localId: id,
+    expectedRevision: z.string(),
+    gistId,
+    fileName: gistFileName,
+    storage: GistStorageSchema,
+    /** Absolute directory on the selected Paseo host; required for `repository`. */
+    repository: repositoryPath.optional(),
+  }),
+  GistLinkPreviewSchema,
+);
+export const gistLinkCommit = rpc(
+  "gist.link.commit",
+  z.object({ ...root, previewId: z.string(), confirmTarget: z.literal(true) }),
+  z.object({ entry: EntrySchema, status: GistStatusSchema }),
+);
+export const gistPublishPreview = rpc(
+  "gist.publish.preview",
+  z.object({
+    ...root,
+    localId: id,
+    expectedRevision: z.string(),
+    mode: z.enum(["revision", "new"]),
+    /** `new` only; defaults to the pack's current storage, else "host". */
+    storage: GistStorageSchema.optional(),
+    repository: repositoryPath.optional(),
+    fileName: gistFileName.optional(),
+    public: z.boolean().default(false),
+    description: z.string().max(500).optional(),
+  }),
+  GistPublishPreviewSchema,
+);
+export const gistPublishCommit = rpc(
+  "gist.publish.commit",
+  z.object({
+    ...root,
+    previewId: z.string(),
+    overwriteRemote: z.boolean().default(false),
+    confirmTarget: z.boolean().default(false),
+    /** Accept the stated consequence of `refresh-baseline` (no remote write). */
+    refreshBaselineOnly: z.boolean().default(false),
+  }),
+  z.object({
+    outcome: GistPublishOutcomeSchema,
+    message: z.string(),
+    operation: GistOperationSchema.optional(),
+    gist: z
+      .object({
+        id: z.string(),
+        url: z.string(),
+        fileName: z.string(),
+        revision: z.string().optional(),
+        public: z.boolean(),
+      })
+      .optional(),
+    status: GistStatusSchema.optional(),
+    entry: EntrySchema.optional(),
+  }),
+);
+export const gistPublishOperation = rpc(
+  "gist.publish.operation",
+  z.object({
+    ...root,
+    operationId: z.string().regex(/^[a-zA-Z0-9-]{8,64}$/),
+    action: GistOperationActionSchema.default("check"),
+    /** `adopt`: an exactly matching Gist found by `check`. */
+    gistId: gistId.optional(),
+    /** `dismiss` on an unconfirmed create: a later publish may duplicate it. */
+    acceptDuplicateRisk: z.boolean().default(false),
+  }),
+  z.object({ operation: GistOperationSchema, status: GistStatusSchema.optional() }),
+);
+export const gistUnlink = rpc(
+  "gist.unlink",
+  z.object({ ...root, localId: id, expectedRevision: z.string() }),
+  z.object({ entry: EntrySchema, status: GistStatusSchema }),
 );
 export const importPreview = rpc(
   "import.preview",

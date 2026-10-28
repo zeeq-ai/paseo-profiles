@@ -1,6 +1,6 @@
 {
   "name": "@zeeq-ai/paseo-profiles",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A portable library of Paseo agent profile packs with YAML import, export, updates, and switching.",
   "type": "module",

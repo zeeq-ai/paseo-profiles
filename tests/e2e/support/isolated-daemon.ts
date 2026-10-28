@@ -61,8 +61,14 @@ async function assertCliVersion(executable: string, cwd: string, env: NodeJS.Pro
   }
 }
 
-function isolatedEnvironment(home: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, PASEO_HOME: home };
+function isolatedEnvironment(home: string, ghConfigDir: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, PASEO_HOME: home, GH_CONFIG_DIR: ghConfigDir };
+  // A test must never reach a developer's GitHub account, even if a fake `gh` is missing.
+  delete env.GH_TOKEN;
+  delete env.GITHUB_TOKEN;
+  delete env.GH_ENTERPRISE_TOKEN;
+  delete env.GITHUB_ENTERPRISE_TOKEN;
+  delete env.GH_HOST;
   // Do not let a developer's endpoint, credentials, or local daemon override this fixture.
   delete env.PASEO_HOST;
   delete env.PASEO_PASSWORD;
@@ -162,11 +168,21 @@ export interface IsolatedDaemon {
   close(): Promise<void>;
 }
 
-export async function startIsolatedDaemon(): Promise<IsolatedDaemon> {
+export interface IsolatedDaemonOptions {
+  /** Extra environment for the daemon and plugin install, e.g. a PATH with a fake `gh` first. */
+  env?: NodeJS.ProcessEnv;
+}
+
+export async function startIsolatedDaemon(
+  options: IsolatedDaemonOptions = {},
+): Promise<IsolatedDaemon> {
   const root = await mkdtemp(path.join(tmpdir(), "paseo-profiles-e2e-"));
   const home = path.join(root, ".paseo");
   const executable = process.env.PASEO_CLI_BIN ?? "paseo";
-  const baseEnvironment = isolatedEnvironment(home);
+  const baseEnvironment = {
+    ...isolatedEnvironment(home, path.join(root, "gh-config")),
+    ...options.env,
+  };
   const excludedPorts = [6767, 6768, Number(process.env.E2E_DAEMON_PORT ?? 0)];
   let daemonProcess: ChildProcess | undefined;
   let client: DaemonClient | undefined;

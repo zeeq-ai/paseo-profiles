@@ -61,8 +61,10 @@ export function parseSet(
   };
 }
 
+// Output stays version 1 unless the pack carries a portable Gist pointer, which requires version 2.
 export function serializeSet(set: ProfileSet): string {
-  return stringify(SetSchema.parse(set), {
+  const parsed = SetSchema.parse(set);
+  return stringify(SetSchema.parse({ ...parsed, version: parsed.gist ? 2 : 1 }), {
     version: "1.2",
     schema: "core",
     aliasDuplicateObjects: false,

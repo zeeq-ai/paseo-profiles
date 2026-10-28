@@ -28,20 +28,77 @@ export const ProfilesSchema = z
       ids.add(profile.id);
     }
   });
+export function isSafeGistFileName(name: string): boolean {
+  return (
+    name.length > 0 &&
+    name.length <= 255 &&
+    name !== "." &&
+    name !== ".." &&
+    !name.includes("/") &&
+    !name.includes("\\") &&
+    Array.from(name).every((character) => {
+      const code = character.charCodeAt(0);
+      return code >= 32 && code !== 127;
+    })
+  );
+}
+// A portable destination pointer. It names a Gist and file; it never claims authority or a revision.
+export const GistPointerFieldSchema = z
+  .object({
+    id: z.string().regex(/^[a-fA-F0-9]{5,64}$/, "Expected a Gist ID"),
+    file: z
+      .string()
+      .min(1)
+      .max(255)
+      .refine((name) => isSafeGistFileName(name), { message: "Unsupported Gist file name" }),
+  })
+  .strict();
+export type GistPointerField = z.infer<typeof GistPointerFieldSchema>;
+// Version 1 stays byte-stable. Version 2 only adds the optional `gist` pointer, so older strict
+// readers reject a pack that carries one instead of silently dropping it.
 export const SetSchema = z
   .object({
     format: z.literal("paseo-profile-set"),
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     id: z.string().min(1),
     name: z.string().trim().min(1),
     origin: z.object({ fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).optional(),
     copiedFrom: z.string().optional(),
+    gist: GistPointerFieldSchema.optional(),
     appendSystemPrompt: z.string().optional(),
     profiles: ProfilesSchema.refine((p) => p.length > 0, "A saved pack needs at least one profile"),
   })
-  .strict();
+  .strict()
+  .superRefine((set, ctx) => {
+    if (set.gist && set.version !== 2)
+      ctx.addIssue({
+        code: "custom",
+        path: ["gist"],
+        message: "A Gist link requires version 2 of the profile-pack format",
+      });
+  });
 export type Profile = z.infer<typeof ProfileSchema>;
 export type ProfileSet = z.infer<typeof SetSchema>;
+/** Returns the pack without its location-only Gist pointer, in the lowest version that holds it. */
+export function withoutGist(set: ProfileSet): ProfileSet {
+  const { gist: _gist, ...rest } = set;
+  return { ...rest, version: 1 };
+}
+/** Returns the pack carrying a portable pointer (upgrading it to version 2). */
+export function withGist(set: ProfileSet, gist: GistPointerField): ProfileSet {
+  return { ...set, version: 2, gist };
+}
+/** Carries the target pack's lineage and update link onto incoming content (imports onto a target). */
+export function adoptIdentity(incoming: ProfileSet, target: ProfileSet): ProfileSet {
+  const base = { ...withoutGist(incoming), id: target.id };
+  return target.gist ? withGist(base, target.gist) : base;
+}
+/** A new pack from existing content: new ID, lineage noted, and never the original's update link. */
+export function asCopyOf(set: ProfileSet, id: string, copiedFrom?: string): ProfileSet {
+  return { ...withoutGist(set), id, ...(copiedFrom ? { copiedFrom } : {}) };
+}
+/** The pack as profile content, ignoring the location-only link and the format version it implies. */
+export const semanticSet = withoutGist;
 export const EntrySchema = z.object({
   localId: z.string(),
   revision: z.string(),

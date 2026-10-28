@@ -835,6 +835,7 @@ export function ExportReview({
   gistAvailabilityMessage,
   onCreateGist,
   onCopyGistUrl,
+  onGistLinkExportChange,
 }: {
   value: ExportState;
   path: string;
@@ -849,6 +850,7 @@ export function ExportReview({
   gistAvailabilityMessage: string;
   onCreateGist(): void;
   onCopyGistUrl(): void;
+  onGistLinkExportChange(excluded: boolean): void;
 }) {
   const { colors } = theme;
   const textStyle = { color: colors.foreground };
@@ -870,6 +872,17 @@ export function ExportReview({
         All selected YAML files, including profile notes and the shared prompt, are sent to GitHub.
         Secret Gists are unlisted, not access-controlled; anyone with the URL can view them.
       </Text>
+      {value.gistLinkExport ? (
+        <SettingsCard>
+          <SettingsSwitch
+            label="Exclude the Gist update link from this export"
+            hint="This regenerates the export without the link. The saved pack is unchanged."
+            value={value.gistLinkExport.excluded}
+            disabled={value.busy}
+            onValueChange={onGistLinkExportChange}
+          />
+        </SettingsCard>
+      ) : null}
       <ActionRow
         label="Create a secret GitHub Gist"
         actionLabel={value.busyAction === "gist" ? "Creating…" : "Create gist"}

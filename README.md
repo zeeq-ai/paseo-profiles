@@ -18,6 +18,8 @@ Open **Agent profile packs** from the sidebar or Command Center. Configure **Lib
 - **Import packs** brings YAML files into the library. Raw Paseo JSON configuration can also supply agent profiles.
 - **Export** produces portable YAML for selected current profiles or saved packs.
 - **Create secret Gist** sends the selected export to GitHub using the authenticated `gh` CLI on the daemon host. A secret Gist is unlisted, not access-controlled; anyone with its URL can view it.
+- **Link Gist** remembers one Gist file for a saved pack. Choose host-only storage, a sidecar in a Git repository on the host, or a link inside the portable pack file.
+- **Publish revision** reviews and updates the pack's linked Gist file. **Publish as a new Gist** creates a separate Gist and makes it the update target, leaving the old Gist online.
 - **Import from Gist** loads YAML/JSON files from a trusted Gist URL into the normal preview flow. The plugin does not execute Gist contents.
 - **Add selected to Paseo** adds profiles or replaces explicit targets, preserving unrelated profiles.
 - **Use pack** previews and replaces the host's complete current profile list.
@@ -42,7 +44,17 @@ Library updates do not change Paseo. **Update and use** reviews both changes bef
 
 Paseo's configuration API has no conditional write. The plugin checks for observed profile and prompt changes, serializes its own operations, and saves recovery state before applying, but another Paseo client can still edit the configuration between the final check and write. Profile catalog changes do not reconfigure existing agents.
 
-See [example packs](examples/) for the portable format (`format: paseo-profile-set`, `version: 1`). Notes, icon, color, and all JSON-compatible profile fields are preserved, including fields the plugin does not recognize. Exports include the shared prompt and omit unrelated daemon configuration.
+See [example packs](examples/) for the portable format (`format: paseo-profile-set`, `version: 1`). Notes, icon, color, and all JSON-compatible profile fields are preserved, including fields the plugin does not recognize. Exports include the shared prompt and omit unrelated daemon configuration. Packs with an embedded Gist link use `version: 2`.
+
+## Publish updates to a Gist
+
+Open a saved pack's **GitHub Gist** section to link an existing YAML file or publish a new Gist. The review names the GitHub account used by `gh` on the selected Paseo host, the Gist owner, the exact filename, and the changes being sent. Linking alone does not write to GitHub. Edits to a saved pack show as unpublished changes until you confirm a publish.
+
+A revision publish changes only the linked file; other files and the Gist description stay intact. If the file changed remotely, review the remote version, explicitly overwrite it, or publish a new Gist. GitHub keeps the last write, so an edit made during publication can be overwritten. Publishing a new Gist keeps the pack ID and switches its active link only after confirmed completion. People using the old Gist URL will not receive later updates.
+
+The link can be saved on this host only, in a sidecar at a Git repository path you enter, or inside the pack YAML. Repository sidecars are shared when you commit and push them; the plugin does not run Git commits or pushes. An embedded link uses pack format v2 and needs Paseo profile packs 0.2.0 or later to read it. Files without an embedded link continue to export as v1. Both portable link locations expose the Gist URL to anyone receiving that file, including access to a secret Gist and its history.
+
+If a response is lost after sending, the plugin keeps an unresolved operation and offers a check. A different current file does not prove the earlier publish failed; another writer may have replaced it. Creating another Gist after an uncertain result may produce a duplicate. A failed local link save can be completed without creating the Gist again.
 
 ## Develop
 
@@ -65,3 +77,4 @@ Use a local filesystem for the library. Interrupted writes reconcile on the next
 - [Research and source references](docs/research.md)
 - [Team and ownership](docs/team.md)
 - [Verification and limits](docs/verification.md)
+- [Gist publication design](docs/gist-revision-design.md)

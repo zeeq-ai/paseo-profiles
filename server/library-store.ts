@@ -152,6 +152,10 @@ export class LibraryStore {
     const updating = localId !== undefined;
     const chosen = localId ?? randomUUID();
     const before = updating ? await this.assertRevision(chosen, expectedRevision) : undefined;
+    if (before && before.set.id !== set.id)
+      throw new Error(
+        "A saved pack keeps its ID when it is updated. Duplicate it or import as a copy to create a new pack.",
+      );
     const text = serializeSet(set);
     const journal: LibraryJournal = {
       id: randomUUID(),

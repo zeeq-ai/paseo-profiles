@@ -4,14 +4,18 @@ import path from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
 import type { RpcInput } from "@getpaseo/plugin";
 import { canonicalJson, profilesDiff } from "../shared/canonical";
-import { describeImport } from "../shared/import-plan";
+import { describeImport, sameContent } from "../shared/import-plan";
 import type * as contracts from "../shared/rpc";
 import {
+  adoptIdentity,
+  asCopyOf,
   type LibraryEntry,
   type Profile,
   type ProfileSet,
   ProfilesSchema,
   SetSchema,
+  withGist,
+  withoutGist,
 } from "../shared/set";
 import {
   defaultHome,
@@ -145,20 +149,27 @@ export class ProfileService {
     return (await this.store(input.libraryRoot)).read(input.localId);
   }
   async saveSet(input: RpcInput<typeof contracts.saveSet>) {
-    return (await this.store(input.libraryRoot)).save(
-      input.set,
-      input.localId,
-      input.expectedRevision,
-    );
+    const store = await this.store(input.libraryRoot);
+    if (!input.localId) return store.save(input.set);
+    // An ordinary edit never moves the pack's lineage or its update link; link operations own those.
+    return store.locked(async () => {
+      const current = await store.assertRevision(input.localId as string, input.expectedRevision);
+      const set = current.set.gist
+        ? withGist({ ...input.set, id: current.set.id }, current.set.gist)
+        : { ...withoutGist(input.set), id: current.set.id };
+      if (input.set.id !== current.set.id)
+        throw new Error(
+          "A saved pack keeps its ID when it is updated. Duplicate it or import as a copy to create a new pack.",
+        );
+      return store.saveUnlocked(set, input.localId, input.expectedRevision);
+    });
   }
   async duplicateSet(input: RpcInput<typeof contracts.duplicateSet>) {
     const store = await this.store(input.libraryRoot);
     return store.locked(async () => {
       const source = await store.assertRevision(input.localId, input.expectedRevision);
       return store.saveUnlocked({
-        ...source.set,
-        id: randomUUID(),
-        copiedFrom: source.set.id,
+        ...asCopyOf(source.set, randomUUID(), source.set.id),
         name: input.name,
       });
     });
@@ -253,7 +264,11 @@ export class ProfileService {
         profiles: selected,
         appendSystemPrompt: current.appendSystemPrompt,
       });
-      return store.saveUnlocked(set, input.localId, input.expectedRevision);
+      return store.saveUnlocked(
+        previous?.set.gist ? withGist(set, previous.set.gist) : set,
+        input.localId,
+        input.expectedRevision,
+      );
     });
   }
   async exportProfiles(input: RpcInput<typeof contracts.exportProfiles>) {
@@ -280,13 +295,13 @@ export class ProfileService {
         const { set } = await store.read(id);
         const profiles = this.select(set.profiles, input.profileIds);
         const subset = profiles.length !== set.profiles.length;
-        sets.push(
-          SetSchema.parse({
-            ...set,
-            ...(subset ? { id: randomUUID(), copiedFrom: set.id } : {}),
-            profiles,
-          }),
-        );
+        // A subset is a new pack, so it never carries the original's update link.
+        const exported = subset
+          ? { ...asCopyOf(set, randomUUID(), set.id), profiles }
+          : input.excludeGistLink
+            ? withoutGist(set)
+            : set;
+        sets.push(SetSchema.parse(exported));
       }
     }
     return {
@@ -308,8 +323,19 @@ export class ProfileService {
         file.name.replace(/\.(json|ya?ml)$/i, "") || "Imported profiles",
       );
       let incoming = parsed.set;
+      // A pack imported onto a differently identified target keeps its own ID, so its recorded
+      // source ID is also a match: re-importing from the same source stays repeatable.
       const matches = parsed.hasIdentity
-        ? listed.entries.filter((e) => e.set.id === incoming.id)
+        ? (
+            await Promise.all(
+              listed.entries.map(async (e) =>
+                e.set.id === incoming.id ||
+                (await store.metadata(e.localId))?.sourceSetId === incoming.id
+                  ? e
+                  : undefined,
+              ),
+            )
+          ).filter((e): e is LibraryEntry => e !== undefined)
         : [];
       const target = input.asCopy
         ? undefined
@@ -330,13 +356,15 @@ export class ProfileService {
           name: e.set.name,
           reason: matches.includes(e) ? "Matching source pack ID" : "Related source origin",
         }));
+      const sourceSetId = incoming.id;
       if (input.asCopy)
-        incoming = {
-          ...incoming,
-          id: randomUUID(),
-          copiedFrom: incoming.id === "legacy" ? undefined : incoming.id,
-        };
-      else if (!parsed.hasIdentity) incoming = { ...incoming, id: target?.set.id ?? randomUUID() };
+        incoming = asCopyOf(
+          incoming,
+          randomUUID(),
+          incoming.id === "legacy" ? undefined : incoming.id,
+        );
+      else if (target) incoming = adoptIdentity(incoming, target.set);
+      else if (!parsed.hasIdentity) incoming = { ...incoming, id: randomUUID() };
       const metadata = await (target ? store.metadata(target.localId) : Promise.resolve(undefined));
       const description = describeImport(target?.set, incoming, metadata?.baseline);
       items.push({
@@ -348,7 +376,7 @@ export class ProfileService {
         ambiguous,
         ...description,
         metadata: {
-          sourceSetId: incoming.id,
+          sourceSetId: input.asCopy ? incoming.id : sourceSetId,
           originFingerprint: incoming.origin?.fingerprint,
           baseline: incoming,
           baselineHash: hash(incoming),
@@ -384,7 +412,7 @@ export class ProfileService {
       if (
         item.localChanges &&
         !item.sourceUnchanged &&
-        canonicalJson(item.incoming) !== canonicalJson(item.target?.set) &&
+        !(item.target && sameContent(item.incoming, item.target.set)) &&
         !replaceLocalChanges
       )
         throw new Error("Explicitly choose Replace local changes before overwriting local edits");
@@ -409,10 +437,7 @@ export class ProfileService {
           for (const item of plan.items) {
             if (item.target && item.sourceUnchanged)
               entries.push(await store.read(item.target.localId));
-            else if (
-              item.target &&
-              canonicalJson(item.target.set) === canonicalJson(item.incoming)
-            ) {
+            else if (item.target && sameContent(item.target.set, item.incoming)) {
               if (
                 canonicalJson(await store.metadata(item.target.localId)) !==
                 canonicalJson(item.metadata)
