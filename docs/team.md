@@ -23,3 +23,20 @@ At each phase, report changed files, actual checks, unresolved behavior, and the
 The scaffold and shared contracts were established before parallel implementation. Storage, native UI, and behavioral verification were coordinated through the lead, who integrated the final client fixes and ran the isolated daemon/browser checks. The main Paseo test suite and daemon on port 6767 were left alone.
 
 On 2026-10-25 the lead reused Staff Engineer II and End-User Customer Advocate for the requested layout and UX verification of appearance editing, destination fallbacks, shared prompts, and Select all. Both reviewed a disposable Paseo 0.13.0 host; implementation and automated backend tests remained with the lead. Review findings and verification are recorded in [verification.md](verification.md).
+
+## Gist revision publishing, 2026-10-28
+
+The user requested a technical, functional, and visual design, then authorized implementation with teamwork. The design used System Architect, GitHub API Researcher, Visual Product Designer, and Customer Advocate inputs. The approved decisions are recorded in [gist-revision-design.md](gist-revision-design.md).
+
+| Member | Ownership | Agent |
+| --- | --- | --- |
+| Codex lead | GitHub CLI gateway, integration, documentation, isolated browser verification | Parent session |
+| Principal Engineer | Shared v1/v2 and publication contracts, link storage, publication service, journals and recovery | `64147862-faa4-43a1-a591-af50e3e25516` |
+| Staff Engineer II | Saved-pack Gist section, link/publish/recovery reviews, storage controls | `5710a337-c2a6-48a6-89f2-7f1dd616de1d` |
+| Principal Engineer acting as SDET | Stateful fake GitHub, transport/service tests, isolated daemon RPC fixtures | `50c602fa-4570-40eb-a231-d66433b302f2` |
+| Visual Product Designer | Read-only source review of spacing, hierarchy, and action states | `8b2755a3-dce3-43a1-8df8-4491823cd294` |
+| Customer Advocate | Read-only review of link, overwrite, uncertain-result, and new-Gist workflows | `8534a66f-fbda-4314-9768-96be04efb321` |
+
+Implementation uses a shared checkout with explicit file ownership. GitHub behavior is exercised through a fake `gh` in temporary Paseo homes; verification does not publish to a real account.
+
+The lead completed the remaining integration and verification when the backend/SDET agents reached their session limit. The Customer Advocate reviewed six rendered wide and compact screenshots and found no new material blockers. The Staff Engineer addressed findings from both the source reviews and the lead's browser checks.

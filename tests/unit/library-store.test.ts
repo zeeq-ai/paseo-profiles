@@ -159,9 +159,9 @@ describe("external profile-set library", () => {
       baselineHash: "sha256:initial",
     };
     const initial = await store.save(initialSet, undefined, undefined, initialMetadata);
-    const failedSet = profileSet({ id: "failed-source", name: "Failed update" });
+    const failedSet = profileSet({ id: "stable-head", name: "Failed update" });
     const failedMetadata = {
-      sourceSetId: failedSet.id,
+      sourceSetId: "failed-source",
       baseline: failedSet,
       baselineHash: "sha256:failed",
     };
@@ -193,8 +193,8 @@ describe("external profile-set library", () => {
         JSON.parse(await readFile(path.join(journalDirectory, name), "utf8")),
       ),
     );
-    expect(journals.find((journal) => journal.metadata?.sourceSetId === failedSet.id)?.status).toBe(
-      "not-applied",
-    );
+    expect(
+      journals.find((journal) => journal.metadata?.sourceSetId === "failed-source")?.status,
+    ).toBe("not-applied");
   });
 });

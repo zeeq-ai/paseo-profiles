@@ -1,14 +1,17 @@
 import { canonicalJson, profilesDiff } from "./canonical";
-import type { ProfileSet } from "./set";
+import { type ProfileSet, semanticSet } from "./set";
+
+/** Equal profile content; the location-only Gist link and its format version are ignored. */
+export const sameContent = (a: ProfileSet, b: ProfileSet) =>
+  canonicalJson(semanticSet(a)) === canonicalJson(semanticSet(b));
 
 export function describeImport(
   current: ProfileSet | undefined,
   incoming: ProfileSet,
   baseline?: ProfileSet,
 ) {
-  const sourceUnchanged = !!baseline && canonicalJson(incoming) === canonicalJson(baseline);
-  const localChanges =
-    !!current && !!baseline && canonicalJson(current) !== canonicalJson(baseline);
+  const sourceUnchanged = !!baseline && sameContent(incoming, baseline);
+  const localChanges = !!current && !!baseline && !sameContent(current, baseline);
   const diff = profilesDiff(current?.profiles ?? [], incoming.profiles);
   return {
     diff,
@@ -23,7 +26,7 @@ export function describeImport(
         ? "Source unchanged; local changes retained"
         : sourceUnchanged
           ? "Source unchanged"
-          : current && canonicalJson(current) === canonicalJson(incoming)
+          : current && sameContent(current, incoming)
             ? "Contents already match; update import baseline only"
             : localChanges
               ? "Review local changes before replacing"

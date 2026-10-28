@@ -1,5 +1,6 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { GistPublicationService } from "./server/gist-publication";
 import { createGist, gistAvailability, readGist } from "./server/gists";
 import { readHostFile, writeHostFile } from "./server/host-files";
 import { ProfileService } from "./server/profile-service";
@@ -21,6 +22,12 @@ export default function contribute(server: PluginServerContext) {
     });
     return service;
   };
+  let gists: GistPublicationService | undefined;
+  const getGists = (paseo: PaseoApi) => {
+    const profiles = getService(paseo);
+    gists ??= new GistPublicationService({ store: (root) => profiles.store(root) });
+    return gists;
+  };
   server.handle(rpc.listLibrary, (input, { paseo }) => getService(paseo).listLibrary(input));
   server.handle(rpc.readSet, (input, { paseo }) => getService(paseo).readSet(input));
   server.handle(rpc.saveSet, (input, { paseo }) => getService(paseo).saveSet(input));
@@ -34,6 +41,18 @@ export default function contribute(server: PluginServerContext) {
   server.handle(rpc.gistAvailability, gistAvailability);
   server.handle(rpc.createGist, createGist);
   server.handle(rpc.readGist, readGist);
+  server.handle(rpc.inspectGist, (input, { paseo }) => getGists(paseo).inspect(input));
+  server.handle(rpc.gistStatus, (input, { paseo }) => getGists(paseo).status(input));
+  server.handle(rpc.gistLinkPreview, (input, { paseo }) => getGists(paseo).linkPreview(input));
+  server.handle(rpc.gistLinkCommit, (input, { paseo }) => getGists(paseo).linkCommit(input));
+  server.handle(rpc.gistPublishPreview, (input, { paseo }) =>
+    getGists(paseo).publishPreview(input),
+  );
+  server.handle(rpc.gistPublishCommit, (input, { paseo }) => getGists(paseo).publishCommit(input));
+  server.handle(rpc.gistPublishOperation, (input, { paseo }) =>
+    getGists(paseo).publishOperation(input),
+  );
+  server.handle(rpc.gistUnlink, (input, { paseo }) => getGists(paseo).unlink(input));
   server.handle(rpc.importPreview, (input, { paseo }) => getService(paseo).importPreview(input));
   server.handle(rpc.importCommit, (input, { paseo }) => getService(paseo).importCommit(input));
   server.handle(rpc.applyPreview, (input, { paseo }) => getService(paseo).applyPreview(input));

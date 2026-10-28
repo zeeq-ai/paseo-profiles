@@ -11,6 +11,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { canonicalJson } from "../shared/canonical";
+import type { GistStatus } from "../shared/gist";
 import { preferences } from "../shared/preferences";
 import {
   applyCommit,
@@ -22,6 +23,7 @@ import {
   duplicateSet,
   exportProfiles,
   gistAvailability as gistAvailabilityContract,
+  gistStatus as gistStatusContract,
   historyList,
   importCommit,
   importPreview,
@@ -35,6 +37,7 @@ import {
 } from "../shared/rpc";
 import type { LibraryEntry, Profile } from "../shared/set";
 import { ActionRow } from "./action-row";
+import { GistPublication } from "./gist-publication";
 import type {
   ApplyDraft,
   CurrentState,
@@ -90,6 +93,7 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
   const captureCurrentRpc = useWriteRpc(captureCurrent);
   const exportProfilesRpc = useRpc(exportProfiles);
   const gistAvailabilityRpc = useRpc(gistAvailabilityContract);
+  const gistStatusRpc = useRpc(gistStatusContract);
   const createGistRpc = useWriteRpc(createGist);
   const readGistRpc = useRpc(readGist);
   const importPreviewRpc = useRpc(importPreview);
@@ -137,6 +141,7 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
   const [detail, setDetail] = useState<{ entry: LibraryEntry; root: string } | null>(null);
   const [detailName, setDetailName] = useState("");
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [gistStatuses, setGistStatuses] = useState<Record<string, GistStatus>>({});
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [history, setHistory] = useState<{
     localId: string;
@@ -248,6 +253,16 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
           loading: false,
           error: null,
         });
+        try {
+          const gistResult = await gistStatusRpc({ libraryRoot: result.libraryRoot, check: false });
+          if (request === libraryRequest.current) {
+            setGistStatuses(
+              Object.fromEntries(gistResult.statuses.map((status) => [status.localId, status])),
+            );
+          }
+        } catch {
+          // Gist list subtitles are cached convenience data; library loading remains independent.
+        }
         return result;
       } catch (error) {
         if (
@@ -267,7 +282,7 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
         return null;
       }
     },
-    [configuredRoot, host.id, listLibraryRpc, queryClient],
+    [configuredRoot, gistStatusRpc, host.id, listLibraryRpc, queryClient],
   );
 
   const refreshCurrent = useCallback(async () => {
@@ -1191,6 +1206,17 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
           status: null,
           busy: false,
           gistUrl: null,
+          ...(source === "library" &&
+          localIds?.length === 1 &&
+          entries.find(({ localId }) => localId === localIds[0])?.set.gist
+            ? {
+                gistLinkExport: {
+                  libraryRoot: resolvedRoot,
+                  localId: localIds[0],
+                  excluded: false,
+                },
+              }
+            : {}),
         });
         setExportPath("");
       } catch (error) {
@@ -1204,6 +1230,7 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
       busyAction,
       current,
       exportProfilesRpc,
+      entries,
       refreshGistAvailability,
       resolvedRoot,
       selectedLibrary,
@@ -1226,7 +1253,22 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
         });
         void refreshGistAvailability();
         setExportSelectedName(files[0]?.name ?? "");
-        setExportState({ files, error: null, status: null, busy: false, gistUrl: null });
+        setExportState({
+          files,
+          error: null,
+          status: null,
+          busy: false,
+          gistUrl: null,
+          ...(entry.set.gist
+            ? {
+                gistLinkExport: {
+                  libraryRoot: root,
+                  localId: entry.localId,
+                  excluded: false,
+                },
+              }
+            : {}),
+        });
         setExportPath("");
       } catch (error) {
         setScreenError(errorMessage(error));
@@ -1236,6 +1278,40 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
       }
     },
     [busyAction, exportProfilesRpc, refreshGistAvailability, toast],
+  );
+
+  const setExportGistLinkExcluded = useCallback(
+    async (excluded: boolean) => {
+      const currentExport = exportState;
+      const source = currentExport?.gistLinkExport;
+      if (!currentExport || !source || currentExport.busy) return;
+      setExportState({ ...currentExport, busy: true, error: null });
+      try {
+        const { files } = await exportProfilesRpc({
+          libraryRoot: source.libraryRoot,
+          source: "library",
+          localIds: [source.localId],
+          excludeGistLink: excluded,
+        });
+        setExportSelectedName(files[0]?.name ?? "");
+        setExportState((state) =>
+          state
+            ? {
+                ...state,
+                files,
+                busy: false,
+                error: null,
+                gistLinkExport: { ...source, excluded },
+              }
+            : state,
+        );
+      } catch (error) {
+        setExportState((state) =>
+          state ? { ...state, busy: false, error: errorMessage(error) } : state,
+        );
+      }
+    },
+    [exportProfilesRpc, exportState],
   );
 
   const copyExportFile = useCallback(
@@ -1400,6 +1476,47 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
     [openApply, resolvedRoot],
   );
 
+  const onGistStatus = useCallback((status: GistStatus) => {
+    setGistStatuses((currentValue) => ({ ...currentValue, [status.localId]: status }));
+  }, []);
+
+  const onGistEntry = useCallback(
+    (entry: LibraryEntry) => {
+      setDetail((currentValue) =>
+        currentValue?.entry.localId === entry.localId ? { ...currentValue, entry } : currentValue,
+      );
+      void refreshLibrary(detail?.root ?? resolvedRoot);
+    },
+    [detail?.root, refreshLibrary, resolvedRoot],
+  );
+
+  const reviewGistUpdates = useCallback(
+    (files: Array<{ name: string; text: string }>) => {
+      if (!detail || files.length !== 1) return;
+      setImportDraft({
+        root: detail.root,
+        preferenceRoot: configuredRoot,
+        hostId: host.id,
+        files,
+        text: "",
+        hostPath: "",
+        gistUrl: "",
+        mode: "update",
+        targetLocalId: detail.entry.localId,
+        targetFileIndex: 0,
+        previewSourceFileIndex: -1,
+        preview: null,
+        apply: null,
+        replaceLocalChanges: false,
+        busy: false,
+        error: null,
+        result: null,
+      });
+      setDetail(null);
+    },
+    [configuredRoot, detail, host.id],
+  );
+
   const mainBusy = busyAction !== null;
   const targetChanged = importTargetChanged;
 
@@ -1524,6 +1641,9 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
                       {entry.set.profiles.length} profile
                       {entry.set.profiles.length === 1 ? "" : "s"}
                       {matches ? " · Matches current" : ""}
+                      {gistStatuses[entry.localId]?.pointer
+                        ? ` · ${statusSubtitle(gistStatuses[entry.localId])}`
+                        : ""}
                     </Text>
                   </Pressable>
                 </View>
@@ -1781,6 +1901,17 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
                 </SettingsCard>
               </SettingsSection>
               <SharedPromptReview after={detail.entry.set.appendSystemPrompt} theme={theme} />
+              <GistPublication
+                entry={detail.entry}
+                libraryRoot={detail.root}
+                hostName={host.label}
+                theme={theme}
+                disabled={busyAction !== null}
+                initialStatus={gistStatuses[detail.entry.localId]}
+                onEntry={onGistEntry}
+                onStatus={onGistStatus}
+                onReviewUpdates={reviewGistUpdates}
+              />
               <SettingsSection
                 title="Library actions"
                 info="These actions change the saved pack. Use pack and Add selected change the live host catalog after review."
@@ -2007,6 +2138,7 @@ export function ProfileSetsScreen({ theme, host }: PluginScreenProps) {
               gistAvailabilityMessage={gistAvailabilityMessage}
               onCreateGist={() => void createSecretGist()}
               onCopyGistUrl={() => void copyGistUrl()}
+              onGistLinkExportChange={(excluded) => void setExportGistLinkExcluded(excluded)}
             />
           ) : null}
         </Modal.Content>
@@ -2195,4 +2327,37 @@ function CheckButton({
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function statusSubtitle(status: GistStatus): string {
+  switch (status.state) {
+    case "link-conflict":
+      return "Gist link conflict";
+    case "needs-confirmation":
+      return "Confirm Gist link";
+    case "unresolved-operation":
+      return "Publish needs checking";
+    case "pending-first-publish":
+      return "Pending first publish";
+    case "unpublished-changes":
+      return "Unpublished changes";
+    case "remote-changed":
+      return "Gist changed";
+    case "both-changed":
+      return "Both changed";
+    case "link-change":
+      return "Link change to publish";
+    case "baseline-refresh":
+      return "GitHub matches · mark as published";
+    case "up-to-date":
+      return "Up to date";
+    case "check-github-account":
+      return "Check GitHub account";
+    case "check-failed":
+      return "GitHub status unverified";
+    case "blocked":
+      return "Gist needs review";
+    case "unlinked":
+      return "";
+  }
 }

@@ -78,4 +78,6 @@ export type ExportState = {
   busy: boolean;
   busyAction?: "copy" | "write" | "gist" | "gist-url";
   gistUrl?: string | null;
+  /** One-off portable-link exclusion for a full library-pack export. */
+  gistLinkExport?: { libraryRoot: string; localId: string; excluded: boolean };
 };

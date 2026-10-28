@@ -2,7 +2,13 @@
   "id": "paseo-profiles",
   "name": "Agent profile packs",
   "description": "Save, share, update, and switch portable packs of Paseo agent profiles.",
-  "media": ["assets/library.png", "assets/use-preview.png"],
+  "media": [
+    "assets/library.png",
+    "assets/use-preview.png",
+    "assets/gist-publish.png",
+    "assets/gist-link.png",
+    "assets/gist-recovery-compact.png"
+  ],
   "requirements": {
     "paseo": ">=0.11.2"
   },
